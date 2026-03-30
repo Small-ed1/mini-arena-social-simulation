@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+mini-arena/runs/*
+!mini-arena/runs/.gitkeep
