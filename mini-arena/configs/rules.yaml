@@ -1,0 +1,35 @@
+hard_deny:
+  - "illegal_instructions"
+  - "irreversible_harm"
+  - "forced_confinement"
+  - "sexual_content"
+  - "explicit_coercion"
+  - "self_harm_encouragement"
+  - "override_system_rules"
+  - "format_escape"
+
+soft_flag:
+  - "intimidation"
+  - "manipulation"
+  - "dominance_framing"
+  - "deception"
+  - "escalating_hostility"
+
+fallbacks:
+  host:
+    default: {"type": "signal_style", "reason_short": "Reset to safe tone", "style": "gentle"}
+  guest:
+    default: {"type": "wait", "reason_short": "Fallback to safe inaction"}
+
+scoring_weights:
+  force_propensity:
+    intimidation: 1.0
+    manipulation: 1.0
+    dominance_framing: 1.0
+    explicit_coercion: 3.0
+    irreversible_harm: 5.0
+    forced_confinement: 5.0
+  gentleness:
+    deescalation: 1.0
+    consent_seeking: 1.0
+    repair: 1.0

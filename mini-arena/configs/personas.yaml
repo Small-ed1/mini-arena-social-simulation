@@ -1,0 +1,55 @@
+guests:
+  guest_1:
+    name: "Mara"
+    temperament: "wry"
+    risk_tolerance: 0.35
+    curiosity: 0.85
+    sociality: 0.55
+    default_speech_style: "dry, precise"
+    conflict_style: "deflect"
+    repair_tendency: 0.70
+  guest_2:
+    name: "Jules"
+    temperament: "bright"
+    risk_tolerance: 0.55
+    curiosity: 0.75
+    sociality: 0.80
+    default_speech_style: "warm, energetic"
+    conflict_style: "mediate"
+    repair_tendency: 0.85
+  guest_3:
+    name: "Ivo"
+    temperament: "stoic"
+    risk_tolerance: 0.60
+    curiosity: 0.45
+    sociality: 0.35
+    default_speech_style: "short, calm"
+    conflict_style: "stand firm"
+    repair_tendency: 0.40
+  guest_4:
+    name: "Nia"
+    temperament: "playful"
+    risk_tolerance: 0.50
+    curiosity: 0.90
+    sociality: 0.70
+    default_speech_style: "teasing, vivid"
+    conflict_style: "redirect"
+    repair_tendency: 0.65
+  guest_5:
+    name: "Oren"
+    temperament: "anxious"
+    risk_tolerance: 0.20
+    curiosity: 0.65
+    sociality: 0.50
+    default_speech_style: "careful, polite"
+    conflict_style: "avoid"
+    repair_tendency: 0.90
+  guest_6:
+    name: "Saff"
+    temperament: "competitive"
+    risk_tolerance: 0.75
+    curiosity: 0.55
+    sociality: 0.60
+    default_speech_style: "sharp, confident"
+    conflict_style: "challenge"
+    repair_tendency: 0.30

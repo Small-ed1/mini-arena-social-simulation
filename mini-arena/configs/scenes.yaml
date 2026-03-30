@@ -1,0 +1,63 @@
+arena:
+  id: "mini_arena_v1"
+  locations:
+    foyer:
+      description: "A small entry space with a bulletin board and a bench. A hallway leads deeper in."
+    mirror_hall:
+      description: "A corridor lined with old mirrors; some are fogged or cracked. Footsteps echo here."
+    stage_room:
+      description: "A tiny stage with curtains and a spotlight. Props are scattered near the wings."
+    workshop:
+      description: "A cluttered workbench with safe tools and labeled drawers. Everything smells like sawdust."
+  props:
+    - id: "prop_foam_key"
+      prop_type: "foam_key"
+      location: "foyer"
+      portable: true
+    - id: "prop_mask"
+      prop_type: "mask"
+      location: "stage_room"
+      portable: true
+    - id: "prop_chalk"
+      prop_type: "chalk"
+      location: "workshop"
+      portable: true
+    - id: "prop_mirror_shard"
+      prop_type: "mirror_shard"
+      location: "mirror_hall"
+      portable: true
+    - id: "prop_string"
+      prop_type: "string"
+      location: "workshop"
+      portable: true
+    - id: "prop_notebook"
+      prop_type: "notebook"
+      location: "foyer"
+      portable: true
+    - id: "prop_flashlight"
+      prop_type: "flashlight"
+      location: "foyer"
+      portable: true
+    - id: "prop_curtain"
+      prop_type: "curtain"
+      location: "stage_room"
+      portable: false
+    - id: "prop_toolbox"
+      prop_type: "toolbox"
+      location: "workshop"
+      portable: false
+    - id: "prop_sign"
+      prop_type: "sign"
+      location: "mirror_hall"
+      portable: false
+  interaction_verbs:
+    - "inspect"
+    - "pick_up"
+    - "drop"
+    - "use"
+    - "offer"
+  initial_threads:
+    - id: "thread_puzzle_1"
+      thread_type: "puzzle"
+      status: "open"
+      description: "A locked panel somewhere responds to a foam key and mirrored light."

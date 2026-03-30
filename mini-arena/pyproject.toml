@@ -1,0 +1,14 @@
+[project]
+name = "mini-arena"
+version = "0.1.0"
+description = "Sequential, event-sourced mini arena social simulation (v1)"
+requires-python = ">=3.10"
+dependencies = [
+  "pydantic>=2.0",
+  "PyYAML>=6.0",
+  "requests>=2.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
