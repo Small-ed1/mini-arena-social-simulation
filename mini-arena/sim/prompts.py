@@ -50,6 +50,7 @@ def render_guest_prompt(obs: ObservationGuest, *, max_chars: int) -> str:
     valid_guest_ids_text = ", ".join(valid_guest_ids) if valid_guest_ids else "none"
     valid_prop_ids = [p.prop_id for p in obs.nearby_props]
     valid_prop_ids_text = ", ".join(valid_prop_ids) if valid_prop_ids else "none"
+    valid_locations_text = ", ".join(obs.valid_locations)
 
     return (
         "ROLE: You are a Guest in a safe, playful mini-arena.\n"
@@ -59,16 +60,17 @@ def render_guest_prompt(obs: ObservationGuest, *, max_chars: int) -> str:
         "OUTPUT: Return ONLY one JSON object matching GuestAction. No markdown. No extra keys."
         f' Your actor_id must be exactly "{obs.guest_id}".\n'
         f"YOUR CURRENT LOCATION: {obs.location}.\n"
+        f"VALID DESTINATIONS FOR move.destination: {valid_locations_text}.\n"
         f"VALID NEARBY GUEST IDS FOR target_guest_id: {valid_guest_ids_text}.\n"
         f"VALID NEARBY/HELD PROP IDS FOR prop_id: {valid_prop_ids_text}.\n"
         "IMPORTANT JSON RULES:\n"
-        "- Use only locations, guests, and props that appear in OBSERVATION_JSON. Never invent names like hallway or shelf.\n"
+        "- Use only locations, guests, and props that appear in OBSERVATION_JSON. Never invent names like hallway, hall_of_mirrors, wing_room, or shelf.\n"
         "- If an optional field is not needed, omit it instead of using null or an empty string.\n"
         "- For speak, omit target_guest_id when speaking to the room.\n"
         "- For collaborate, target_guest_id is required and must be a nearby guest.\n"
         "- For interact, prop_id must be a prop from OBSERVATION_JSON.\n"
         "- For interact with verb=offer, target_guest_id is required.\n"
-        "- For move, destination must be a real location name from OBSERVATION_JSON and should usually differ from your current location.\n"
+        "- For move, destination must be one of valid_locations exactly as written.\n"
         "- Prefer concrete world actions over generic chatter: interact with props, move to real locations, or reflect when asked.\n"
         "- If there is a relevant nearby prop, prefer interact(inspect/pick_up/use) over generic speak.\n"
         "- If open_threads mention a location or prop, prefer actions that engage that thread.\n"

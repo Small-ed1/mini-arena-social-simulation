@@ -289,6 +289,7 @@ class ObservationGuest(StrictModel):
     persona: Annotated[str, StringConstraints(min_length=1, max_length=400)]
     goal: Annotated[str, StringConstraints(min_length=1, max_length=120)]
     location: LocationId
+    valid_locations: List[LocationId] = Field(default_factory=list, min_length=1)
     local_view: Annotated[str, StringConstraints(min_length=1, max_length=1200)]
     nearby_guests: List[GuestSnapshot]
     nearby_props: List[PropSnapshot]
@@ -327,6 +328,15 @@ class ModelInfo(StrictModel):
     output_chars: Optional[int] = None
 
 
+class RawModelIO(StrictModel):
+    prompt: Optional[
+        Annotated[str, StringConstraints(min_length=1, max_length=40000)]
+    ] = None
+    output: Optional[
+        Annotated[str, StringConstraints(min_length=1, max_length=40000)]
+    ] = None
+
+
 class EnvResultRecord(StrictModel):
     success: bool
     messages: List[Annotated[str, StringConstraints(min_length=1, max_length=240)]] = (
@@ -353,6 +363,7 @@ class EventRecord(StrictModel):
     safety: SafetyDecision
     env: EnvResultRecord
     model_info: ModelInfo
+    raw_model_io: Optional[RawModelIO] = None
     error: Optional[Annotated[str, StringConstraints(min_length=1, max_length=400)]] = (
         None
     )

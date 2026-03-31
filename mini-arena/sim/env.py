@@ -146,6 +146,7 @@ class Environment:
             persona=persona_text,
             goal=g.current_goal,
             location=g.location,
+            valid_locations=sorted(world.locations),
             local_view=local_view,
             nearby_guests=nearby_guests,
             nearby_props=nearby_props,

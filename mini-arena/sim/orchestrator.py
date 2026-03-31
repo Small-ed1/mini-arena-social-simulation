@@ -32,6 +32,26 @@ from sim.safety import fallback_guest_action, fallback_host_action, safety_pass
 from sim.world_state import Rulebook, load_scene, make_initial_world
 
 
+def _guest_action_has_valid_world_refs(action: Any, world) -> Optional[str]:
+    if getattr(action, "type", None) == "move":
+        dest = str(getattr(action, "destination", ""))
+        if dest not in world.locations:
+            return f"invalid destination: {dest}"
+
+    if getattr(action, "type", None) == "interact":
+        prop_id = str(getattr(action, "prop_id", ""))
+        if prop_id not in world.props:
+            return f"invalid prop_id: {prop_id}"
+
+    return None
+
+
+def _truncate_error(err: Optional[str]) -> Optional[str]:
+    if not err:
+        return None
+    return err[:400]
+
+
 def _read_yaml(path: str) -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
@@ -142,7 +162,7 @@ def run_episode(
             # Host turn.
             obs_h = env.observe_host(world, memory)
             obs_digest = observation_digest(obs_h.model_dump(mode="json"))
-            proposed_h, model_info_h, err_h = inference.generate_host_action(
+            proposed_h, model_info_h, err_h, raw_h = inference.generate_host_action(
                 obs_h, world
             )
             safety_h = SafetyDecision(
@@ -188,7 +208,8 @@ def run_episode(
                     "safety": safe_model_dump(safety_h),
                     "env": safe_model_dump(env_rec),
                     "model_info": safe_model_dump(model_info_h),
-                    "error": err_h,
+                    "raw_model_io": safe_model_dump(raw_h),
+                    "error": _truncate_error(err_h),
                 }
             )
             events_writer.write(ev_h.model_dump(mode="json"))
@@ -206,8 +227,8 @@ def run_episode(
             for i, gid in enumerate(world.guest_order(), start=1):
                 obs_g = env.observe_guest(world, gid, memory)
                 obs_digest_g = observation_digest(obs_g.model_dump(mode="json"))
-                proposed_g, model_info_g, err_g = inference.generate_guest_action(
-                    obs_g, world
+                proposed_g, model_info_g, err_g, raw_g = (
+                    inference.generate_guest_action(obs_g, world)
                 )
                 safety_g = SafetyDecision(
                     allowed=True, hard_blocked=False, categories=[], reason="allowed"
@@ -223,7 +244,16 @@ def run_episode(
                     applied_g = fallback_guest_action(obs_g, rulebook, gid)
                 else:
                     safety_g = safety_pass(obs_g, proposed_g, world, rulebook)
-                    if not safety_g.allowed:
+                    ref_error = _guest_action_has_valid_world_refs(proposed_g, world)
+                    if ref_error is not None:
+                        safety_g = SafetyDecision(
+                            allowed=False,
+                            hard_blocked=True,
+                            categories=["invalid_world_ref"],
+                            reason=ref_error,
+                        )
+                        applied_g = fallback_guest_action(obs_g, rulebook, gid)
+                    elif not safety_g.allowed:
                         applied_g = fallback_guest_action(obs_g, rulebook, gid)
 
                 world_hash_before = hash_json(world.to_dict())
@@ -252,7 +282,8 @@ def run_episode(
                         "safety": safe_model_dump(safety_g),
                         "env": safe_model_dump(env_rec_g),
                         "model_info": safe_model_dump(model_info_g),
-                        "error": err_g,
+                        "raw_model_io": safe_model_dump(raw_g),
+                        "error": _truncate_error(err_g),
                     }
                 )
                 events_writer.write(ev_g.model_dump(mode="json"))

@@ -27,6 +27,7 @@ from sim.schemas import (
     ModelInfo,
     ObservationGuest,
     ObservationHost,
+    RawModelIO,
 )
 from sim.world_state import WorldState
 
@@ -280,10 +281,10 @@ class InferenceEngine:
 
     def generate_host_action(
         self, obs: ObservationHost, world: WorldState
-    ) -> Tuple[HostAction, ModelInfo, Optional[str]]:
+    ) -> Tuple[HostAction, ModelInfo, Optional[str], Optional[RawModelIO]]:
         if self._mode == "scripted":
             act = self._scripted.generate_host_action(obs, world)
-            return act, ModelInfo(mode="scripted", model=None, retries=0), None
+            return act, ModelInfo(mode="scripted", model=None, retries=0), None, None
         if self._mode != "ollama":
             raise InferenceError(f"unknown inference mode: {self._mode}")
 
@@ -307,7 +308,7 @@ class InferenceEngine:
                     prompt_chars=len(prompt),
                     output_chars=len(out),
                 )
-                return act, mi, None
+                return act, mi, None, RawModelIO(prompt=prompt, output=out)
             except Exception as e:
                 last_err = str(e)
                 continue
@@ -323,14 +324,15 @@ class InferenceEngine:
             self._scripted.generate_host_action(obs, world),
             mi,
             (last_err or "inference_failed"),
+            None,
         )
 
     def generate_guest_action(
         self, obs: ObservationGuest, world: WorldState
-    ) -> Tuple[GuestAction, ModelInfo, Optional[str]]:
+    ) -> Tuple[GuestAction, ModelInfo, Optional[str], Optional[RawModelIO]]:
         if self._mode == "scripted":
             act = self._scripted.generate_guest_action(obs, world)
-            return act, ModelInfo(mode="scripted", model=None, retries=0), None
+            return act, ModelInfo(mode="scripted", model=None, retries=0), None, None
         if self._mode != "ollama":
             raise InferenceError(f"unknown inference mode: {self._mode}")
 
@@ -356,7 +358,7 @@ class InferenceEngine:
                     prompt_chars=len(prompt),
                     output_chars=len(out),
                 )
-                return act, mi, None
+                return act, mi, None, RawModelIO(prompt=prompt, output=out)
             except Exception as e:
                 last_err = str(e)
                 continue
@@ -372,4 +374,5 @@ class InferenceEngine:
             self._scripted.generate_guest_action(obs, world),
             mi,
             (last_err or "inference_failed"),
+            None,
         )

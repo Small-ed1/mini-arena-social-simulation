@@ -48,3 +48,26 @@ def test_action_type_malformed_fails() -> None:
         ta.validate_python(
             {"type": "fly", "reason_short": "Nope", "actor_id": "guest_1"}
         )
+
+
+def test_observation_guest_requires_valid_locations() -> None:
+    from sim.schemas import ObservationGuest
+
+    with pytest.raises(ValidationError):
+        ObservationGuest.model_validate(
+            {
+                "tick": 1,
+                "guest_id": "guest_1",
+                "persona": "careful and observant",
+                "goal": "Explore the arena",
+                "location": "foyer",
+                "valid_locations": [],
+                "local_view": "A small room with a bench.",
+                "nearby_guests": [],
+                "nearby_props": [],
+                "open_threads": [],
+                "memory_chunks": [],
+                "recent_actions": [],
+                "reflection_requested": False,
+            }
+        )
