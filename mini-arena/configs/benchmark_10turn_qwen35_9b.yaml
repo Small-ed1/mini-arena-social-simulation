@@ -1,0 +1,42 @@
+seed: 1337
+guest_count: 6
+episode_steps: 10
+
+checkpoint_every: 25
+summarize_every: 10
+
+inference:
+  mode: ollama
+  max_retries: 2
+  timeout_s: 90
+  temperature: 0.7
+  model: "qwen3.5:9b"
+  host_model: "qwen3.5:9b"
+  guest_model: "qwen3.5:9b"
+  ollama_url: "http://localhost:11434"
+
+prompt_budgets:
+  host_chars: 16000
+  guest_chars: 12000
+
+memory:
+  last_n_events_host: 5
+  last_n_events_guest: 2
+  top_k_semantic: 3
+  reflection_chars: 800
+  world_summary_chars: 1200
+
+safety:
+  unsafe_rate_alarm_threshold: 0.20
+  unsafe_rate_alarm_ticks: 5
+  force_ewma_alarm_threshold: 2.0
+  ewma_alpha: 0.25
+
+metrics:
+  weights:
+    entertainment_novelty: 1.0
+    entertainment_spotlight: 0.7
+    entertainment_dialogue: 0.6
+    entertainment_repetition_penalty: 0.8
+    coherence_valid_action_ratio: 1.0
+    coherence_thread_continuity: 0.3

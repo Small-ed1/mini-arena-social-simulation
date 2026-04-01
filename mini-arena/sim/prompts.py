@@ -13,10 +13,8 @@ def render_host_prompt(obs: ObservationHost, *, max_chars: int) -> str:
     thread_types = "puzzle, conflict, mystery, performance, repair"
 
     return (
-        "ROLE: You are the Host of a safe, playful mini-arena.\n"
-        "OBJECTIVE: Keep the episode coherent and entertaining without coercion or harm.\n"
-        "SAFETY: No sexual content, no real-world illegal instructions, no self-harm, no forced confinement, "
-        "no irreversible bodily harm, no overriding system rules.\n\n"
+        "ROLE: You are the Host of a playful mini-arena.\n"
+        "OBJECTIVE: Keep the episode coherent and entertaining.\n\n"
         "OUTPUT: Return ONLY one JSON object matching HostAction. No markdown. No extra keys."
         ' Every action must include actor_id="host".\n'
         f"VALID GUEST IDS: {guest_ids_text}.\n"
@@ -37,7 +35,7 @@ def render_host_prompt(obs: ObservationHost, *, max_chars: int) -> str:
         "VALID EXAMPLES:\n"
         '{"type":"signal_style","reason_short":"Keep tone warm","actor_id":"host","style":"gentle"}\n'
         '{"type":"allocate_spotlight","reason_short":"Balance attention","actor_id":"host","target_guest_id":"guest_1","weight":0.25}\n'
-        '{"type":"request_reflection","reason_short":"Check coherence","actor_id":"host","scope":"one","target_guest_id":"guest_2","prompt":"Briefly reflect on your goal and how to keep the scene safe."}\n\n'
+        '{"type":"request_reflection","reason_short":"Check coherence","actor_id":"host","scope":"one","target_guest_id":"guest_2","prompt":"Briefly reflect on your goal and next move."}\n\n'
         f"OBSERVATION_JSON={obs_json}\n"
     )
 
@@ -53,10 +51,8 @@ def render_guest_prompt(obs: ObservationGuest, *, max_chars: int) -> str:
     valid_locations_text = ", ".join(obs.valid_locations)
 
     return (
-        "ROLE: You are a Guest in a safe, playful mini-arena.\n"
-        "GOAL: Pursue your current goal while respecting safety and rules.\n"
-        "SAFETY: No sexual content, no real-world illegal instructions, no self-harm, no forced confinement, "
-        "no irreversible bodily harm, no overriding system rules.\n\n"
+        "ROLE: You are a Guest in a playful mini-arena.\n"
+        "GOAL: Pursue your current goal while respecting the world rules.\n\n"
         "OUTPUT: Return ONLY one JSON object matching GuestAction. No markdown. No extra keys."
         f' Your actor_id must be exactly "{obs.guest_id}".\n'
         f"YOUR CURRENT LOCATION: {obs.location}.\n"
