@@ -7,6 +7,7 @@ from sim.schemas import (
     GuestSnapshot,
     HostAction,
     HostAllocateSpotlight,
+    HostEnrichWorld,
     HostInjectProp,
     HostRequestReflection,
     HostSignalStyle,
@@ -179,8 +180,17 @@ class Environment:
             )
             messages.append(f"injected prop {prop_id} at {action.location}")
 
+        elif isinstance(action, HostEnrichWorld):
+            if action.location not in world.locations:
+                return EnvResult(False, [f"unknown location: {action.location}"])
+            details = world.location_details.setdefault(str(action.location), [])
+            details.append(str(action.detail))
+            if len(details) > 8:
+                world.location_details[str(action.location)] = details[-8:]
+            messages.append(f"enriched {action.location}")
+
         elif isinstance(action, HostAllocateSpotlight):
-            if action.target_guest_id not in world.guests:
+            if not world.is_spawned(str(action.target_guest_id)):
                 return EnvResult(False, [f"unknown guest: {action.target_guest_id}"])
             self._set_spotlight(
                 world, str(action.target_guest_id), float(action.weight)
@@ -195,12 +205,12 @@ class Environment:
 
         elif isinstance(action, HostRequestReflection):
             if action.scope == "all":
-                for gid in world.guests:
+                for gid in world.guest_order():
                     world.guests[gid].reflection_requested = True
                 messages.append("reflection requested (all)")
             else:
                 tg = action.target_guest_id
-                if tg is None or str(tg) not in world.guests:
+                if tg is None or not world.is_spawned(str(tg)):
                     return EnvResult(False, ["unknown target_guest_id for reflection"])  # type: ignore[unreachable]
                 world.guests[str(tg)].reflection_requested = True
                 messages.append(f"reflection requested ({tg})")
@@ -282,7 +292,7 @@ class Environment:
 
         if atype == "collaborate":
             target = str(action.target_guest_id)
-            if target not in world.guests:
+            if not world.is_spawned(target):
                 return EnvResult(False, [f"unknown target_guest_id: {target}"])
             if world.guests[target].location != g.location:
                 return EnvResult(False, ["target not co-located"])
@@ -335,7 +345,7 @@ class Environment:
 
             if verb == "offer":
                 target = str(action.target_guest_id)
-                if target not in world.guests:
+                if not world.is_spawned(target):
                     return EnvResult(False, [f"unknown target_guest_id: {target}"])
                 if world.guests[target].location != g.location:
                     return EnvResult(False, ["target not co-located"])
@@ -373,15 +383,25 @@ class Environment:
 
     def tick_postprocess(self, world: WorldState) -> None:
         # Keep spotlight weights normalized and non-negative.
+        active_ids = world.guest_order()
         total = sum(
-            max(0.0, float(world.guests[g].spotlight_weight)) for g in world.guests
+            max(0.0, float(world.guests[g].spotlight_weight)) for g in active_ids
         )
         if total <= 0.0:
-            eq = 1.0 / float(len(world.guests))
-            for gid in world.guests:
+            if not active_ids:
+                for gid in world.all_guest_ids():
+                    world.guests[gid].spotlight_weight = 0.0
+                return
+            eq = 1.0 / float(len(active_ids))
+            for gid in world.all_guest_ids():
+                world.guests[gid].spotlight_weight = 0.0
+            for gid in active_ids:
                 world.guests[gid].spotlight_weight = eq
         else:
-            for gid in world.guests:
+            for gid in world.all_guest_ids():
+                if gid not in active_ids:
+                    world.guests[gid].spotlight_weight = 0.0
+            for gid in active_ids:
                 world.guests[gid].spotlight_weight = float(
                     max(0.0, float(world.guests[gid].spotlight_weight)) / total
                 )
@@ -435,6 +455,8 @@ class Environment:
         parts.append(
             f"Arena={world.arena_id} tick={world.tick} style={world.host_style}"
         )
+        if world.unspawned_guest_ids:
+            parts.append(f"UnspawnedGuests={len(world.unspawned_guest_ids)}")
         open_threads = [
             t
             for t in (world.open_threads[k] for k in sorted(world.open_threads))
@@ -446,7 +468,7 @@ class Environment:
                 + ",".join(f"{t.thread_id}:{t.thread_type}" for t in open_threads[:5])
             )
         loc_counts = {}
-        for gid in world.guests:
+        for gid in world.guest_order():
             loc_counts[world.guests[gid].location] = (
                 loc_counts.get(world.guests[gid].location, 0) + 1
             )
@@ -454,11 +476,19 @@ class Environment:
             "GuestsByLoc="
             + ",".join(f"{k}:{loc_counts[k]}" for k in sorted(loc_counts))
         )
+        detail_bits = []
+        for loc in sorted(world.location_details):
+            details = world.location_details.get(loc) or []
+            if details:
+                detail_bits.append(f"{loc}:{details[-1]}")
+        if detail_bits:
+            parts.append("RecentDetails=" + " || ".join(detail_bits[:4]))
         return " | ".join(parts)
 
     def _summarize_local_view(self, world: WorldState, guest_id: str) -> str:
         g = world.guests[guest_id]
         loc_desc = world.locations.get(g.location, "")
+        loc_details = world.location_details.get(g.location, [])
         props_here = [
             pid
             for pid in sorted(world.props)
@@ -471,7 +501,7 @@ class Environment:
             if ogid != guest_id and world.guests[ogid].location == g.location
         ]
         return (
-            f"Location={g.location}. {loc_desc} "
+            f"Location={g.location}. {loc_desc} Details={loc_details[-2:]} "
             f"VisibleProps={props_here[:6]} OtherGuests={others[:6]}"
         )
 

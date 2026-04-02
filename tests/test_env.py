@@ -5,7 +5,7 @@ from pathlib import Path
 import yaml
 
 from sim.env import Environment
-from sim.schemas import GuestInteract, GuestMove, HostSignalStyle
+from sim.schemas import GuestInteract, GuestMove, HostEnrichWorld, HostSignalStyle
 from sim.world_state import Rulebook, load_scene, make_initial_world
 
 
@@ -112,3 +112,32 @@ def test_host_signal_style_only_changes_style() -> None:
     assert res.success
     assert world.host_style == "gentle"
     assert {k: v.to_dict() for k, v in world.guests.items()} == guests_before
+
+
+def test_initial_world_has_unspawned_guests_only() -> None:
+    env = Environment()
+    world = _make_world()
+    obs = env.observe_host(world, memory=None)
+    assert obs.guests == []
+    assert len(world.spawned_guest_ids) == 0
+    assert len(world.unspawned_guest_ids) == 6
+
+
+def test_host_enrich_world_adds_location_detail() -> None:
+    env = Environment()
+    world = _make_world()
+    res = env.apply_host_action(
+        world,
+        HostEnrichWorld(
+            type="enrich_world",
+            reason_short="Add a subtle clue",
+            actor_id="host",
+            location="foyer",
+            detail="A bench cushion looks recently disturbed.",
+        ),
+    )
+    assert res.success
+    assert (
+        world.location_details["foyer"][-1]
+        == "A bench cushion looks recently disturbed."
+    )

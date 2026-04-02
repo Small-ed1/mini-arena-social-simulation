@@ -20,6 +20,20 @@ def test_host_action_validates() -> None:
     assert act.type == "inject_prop"
 
 
+def test_host_enrich_world_validates() -> None:
+    ta = TypeAdapter(HostAction)
+    act = ta.validate_python(
+        {
+            "type": "enrich_world",
+            "reason_short": "Add ambient clue",
+            "actor_id": "host",
+            "location": "mirror_hall",
+            "detail": "A faint crack catches the light oddly.",
+        }
+    )
+    assert act.type == "enrich_world"
+
+
 def test_host_action_extra_field_fails() -> None:
     ta = TypeAdapter(HostAction)
     with pytest.raises(ValidationError):

@@ -65,6 +65,13 @@ class ScriptedPolicy:
 
         if tick % 20 == 0:
             # Rotate reflection requests.
+            if not guest_ids:
+                return HostSignalStyle(
+                    type="signal_style",
+                    reason_short="Keep the world atmosphere consistent",
+                    actor_id="host",
+                    style="curious",
+                )
             idx = (tick // 20 - 1) % max(1, len(guest_ids))
             target = guest_ids[idx]
             return HostRequestReflection(
@@ -91,6 +98,13 @@ class ScriptedPolicy:
 
         if tick % 5 == 0:
             # Spotlight the currently least-highlighted guest.
+            if not guest_ids:
+                return HostSignalStyle(
+                    type="signal_style",
+                    reason_short="Keep the world atmosphere consistent",
+                    actor_id="host",
+                    style="curious",
+                )
             min_gid = min(
                 guest_ids, key=lambda g: float(world.guests[g].spotlight_weight)
             )
@@ -245,6 +259,11 @@ class InferenceEngine:
         self._max_retries = int(cfg.get("max_retries", 2))
         self._timeout_s = int(cfg.get("timeout_s", 60))
         self._temperature = float(cfg.get("temperature", 0.7))
+        self._prompt_variant = str(
+            cfg.get("prompt_variant")
+            or os.getenv("MINI_ARENA_PROMPT_VARIANT")
+            or "current"
+        )
         default_model = str(cfg.get("model") or os.getenv("OLLAMA_MODEL") or "llama3.1")
         self._host_model = str(
             cfg.get("host_model") or os.getenv("OLLAMA_HOST_MODEL") or default_model
@@ -280,7 +299,12 @@ class InferenceEngine:
         return f"{base}/api/generate"
 
     def generate_host_action(
-        self, obs: ObservationHost, world: WorldState
+        self,
+        obs: ObservationHost,
+        world: WorldState,
+        *,
+        prompt_variant: Optional[str] = None,
+        retry_note: Optional[str] = None,
     ) -> Tuple[HostAction, ModelInfo, Optional[str], Optional[RawModelIO]]:
         if self._mode == "scripted":
             act = self._scripted.generate_host_action(obs, world)
@@ -289,7 +313,10 @@ class InferenceEngine:
             raise InferenceError(f"unknown inference mode: {self._mode}")
 
         prompt = render_host_prompt(
-            obs, max_chars=int(self._prompt_budgets.get("host_chars", 32000))
+            obs,
+            max_chars=int(self._prompt_budgets.get("host_chars", 32000)),
+            variant=(prompt_variant or self._prompt_variant),
+            retry_note=retry_note,
         )
         start = time.time()
         last_err: Optional[str] = None
@@ -328,7 +355,12 @@ class InferenceEngine:
         )
 
     def generate_guest_action(
-        self, obs: ObservationGuest, world: WorldState
+        self,
+        obs: ObservationGuest,
+        world: WorldState,
+        *,
+        prompt_variant: Optional[str] = None,
+        retry_note: Optional[str] = None,
     ) -> Tuple[GuestAction, ModelInfo, Optional[str], Optional[RawModelIO]]:
         if self._mode == "scripted":
             act = self._scripted.generate_guest_action(obs, world)
@@ -337,7 +369,10 @@ class InferenceEngine:
             raise InferenceError(f"unknown inference mode: {self._mode}")
 
         prompt = render_guest_prompt(
-            obs, max_chars=int(self._prompt_budgets.get("guest_chars", 24000))
+            obs,
+            max_chars=int(self._prompt_budgets.get("guest_chars", 24000)),
+            variant=(prompt_variant or self._prompt_variant),
+            retry_note=retry_note,
         )
         start = time.time()
         last_err: Optional[str] = None

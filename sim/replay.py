@@ -46,7 +46,16 @@ def replay_run(run_dir: str) -> Tuple[bool, List[str]]:
             )
             # Continue to collect more errors.
 
-        if ev.phase == "host":
+        if ev.phase == "guest" and ev.turn_index == -1:
+            gid = str(ev.actor_id)
+            if gid in world.unspawned_guest_ids:
+                world.unspawned_guest_ids = [
+                    x for x in world.unspawned_guest_ids if x != gid
+                ]
+            if gid not in world.spawned_guest_ids:
+                world.spawned_guest_ids.append(gid)
+            env.tick_postprocess(world)
+        elif ev.phase == "host":
             env.apply_host_action(world, ev.applied_action)  # type: ignore[arg-type]
         else:
             env.apply_guest_action(world, ev.actor_id, ev.applied_action)

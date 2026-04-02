@@ -87,6 +87,14 @@ class HostInjectProp(StrictModel):
     prop_id: Optional[PropId] = None
 
 
+class HostEnrichWorld(StrictModel):
+    type: Literal["enrich_world"]
+    reason_short: ShortReason
+    actor_id: Literal["host"]
+    location: LocationId
+    detail: ShortText
+
+
 class HostAllocateSpotlight(StrictModel):
     type: Literal["allocate_spotlight"]
     reason_short: ShortReason
@@ -124,6 +132,7 @@ HostAction = Annotated[
     Union[
         HostSpawnEvent,
         HostInjectProp,
+        HostEnrichWorld,
         HostAllocateSpotlight,
         HostSignalStyle,
         HostRequestReflection,
@@ -211,6 +220,7 @@ AnyAction = Annotated[
     Union[
         HostSpawnEvent,
         HostInjectProp,
+        HostEnrichWorld,
         HostAllocateSpotlight,
         HostSignalStyle,
         HostRequestReflection,

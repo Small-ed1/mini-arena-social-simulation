@@ -114,7 +114,7 @@ class MetricsEngine:
         # Spotlight fairness proxy.
         spotlight_share = {
             gid: float(world.guests[gid].spotlight_weight)
-            for gid in sorted(world.guests)
+            for gid in world.guest_order()
         }
         shares = list(spotlight_share.values())
         if shares:
@@ -124,7 +124,9 @@ class MetricsEngine:
             spotlight_balance = 1.0
 
         speak_count = sum(1 for e in events if e.applied_action.type == "speak")
-        dialogue = float(min(1.0, speak_count / max(1.0, float(len(world.guests)))))
+        dialogue = float(
+            min(1.0, speak_count / max(1.0, float(len(world.guest_order()))))
+        )
 
         w_ent_nov = float(self._weights.get("entertainment_novelty", 1.0))
         w_ent_spot = float(self._weights.get("entertainment_spotlight", 0.7))

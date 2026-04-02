@@ -134,13 +134,22 @@ class WorldState:
     locations: Dict[str, str]
     props: Dict[str, Prop]
     guests: Dict[str, GuestState]
+    spawned_guest_ids: List[str]
+    unspawned_guest_ids: List[str]
     open_threads: Dict[str, OpenThread]
+    location_details: Dict[str, List[str]] = field(default_factory=dict)
     host_style: str = "neutral"
     host_last_actions: List[str] = field(default_factory=list)
     rulebook: Optional[Rulebook] = None
 
     def guest_order(self) -> List[str]:
+        return sorted(self.spawned_guest_ids)
+
+    def all_guest_ids(self) -> List[str]:
         return sorted(self.guests)
+
+    def is_spawned(self, guest_id: str) -> bool:
+        return str(guest_id) in set(self.spawned_guest_ids)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -148,8 +157,14 @@ class WorldState:
             "tick": self.tick,
             "host_style": self.host_style,
             "locations": {k: self.locations[k] for k in sorted(self.locations)},
+            "location_details": {
+                k: list(self.location_details.get(k, []))
+                for k in sorted(self.locations)
+            },
             "props": {k: self.props[k].to_dict() for k in sorted(self.props)},
             "guests": {k: self.guests[k].to_dict() for k in sorted(self.guests)},
+            "spawned_guest_ids": list(sorted(self.spawned_guest_ids)),
+            "unspawned_guest_ids": list(sorted(self.unspawned_guest_ids)),
             "open_threads": {
                 k: self.open_threads[k].to_dict() for k in sorted(self.open_threads)
             },
@@ -244,7 +259,10 @@ def make_initial_world(
         locations=scene.locations,
         props=props,
         guests=guests,
+        spawned_guest_ids=[],
+        unspawned_guest_ids=list(sorted(guests)),
         open_threads=open_threads,
+        location_details={k: [] for k in sorted(scene.locations)},
         host_style="neutral",
         host_last_actions=[],
         rulebook=rulebook,

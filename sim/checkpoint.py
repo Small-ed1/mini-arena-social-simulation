@@ -91,13 +91,26 @@ def world_from_dict(
             involved_guest_ids=list(td.get("involved_guest_ids") or []),
         )
 
+    spawned_guest_ids = data.get("spawned_guest_ids")
+    if spawned_guest_ids is None:
+        spawned_guest_ids = sorted(guests)
+    unspawned_guest_ids = data.get("unspawned_guest_ids")
+    if unspawned_guest_ids is None:
+        unspawned_guest_ids = []
+
     return WorldState(
         arena_id=str(data["arena_id"]),
         tick=int(data["tick"]),
         locations=dict(data.get("locations") or {}),
         props=props,
         guests=guests,
+        spawned_guest_ids=list(spawned_guest_ids),
+        unspawned_guest_ids=list(unspawned_guest_ids),
         open_threads=open_threads,
+        location_details={
+            str(k): list(v or [])
+            for k, v in (data.get("location_details") or {}).items()
+        },
         host_style=str(data.get("host_style") or "neutral"),
         host_last_actions=list(data.get("host_last_actions") or []),
         rulebook=rulebook,
