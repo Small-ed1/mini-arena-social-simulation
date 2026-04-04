@@ -56,6 +56,66 @@ def _extract_json_object(text: str) -> Dict[str, Any]:
     return obj
 
 
+def _normalize_guest_obj(obj: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(obj)
+    action_type = str(out.get("type", "")).strip()
+    if action_type in {"inspect", "pick_up", "drop", "use", "offer"}:
+        out["type"] = "interact"
+        out.setdefault("verb", action_type)
+    return out
+
+
+def _normalize_host_obj(obj: Dict[str, Any], obs: ObservationHost) -> Dict[str, Any]:
+    out = dict(obj)
+    action_type = str(out.get("type", "")).strip()
+    if action_type != "progression":
+        return out
+
+    target_guest_id = out.get("target_guest_id")
+    if target_guest_id is None and obs.guests:
+        target_guest_id = obs.guests[0].guest_id
+
+    if target_guest_id is not None:
+        return {
+            "type": "allocate_spotlight",
+            "reason_short": str(out.get("reason_short") or "Shift focus to progress"),
+            "actor_id": "host",
+            "target_guest_id": str(target_guest_id),
+            "weight": float(out.get("weight", 0.4)),
+        }
+
+    if out.get("location") is not None and out.get("detail") is not None:
+        return {
+            "type": "enrich_world",
+            "reason_short": str(
+                out.get("reason_short") or "Add concrete physical detail"
+            ),
+            "actor_id": "host",
+            "location": str(out["location"]),
+            "detail": str(out["detail"]),
+        }
+
+    return out
+
+
+def _failure_placeholder_host_action(obs: ObservationHost) -> HostAction:
+    guest_ids = [g.guest_id for g in obs.guests]
+    if guest_ids:
+        return HostAllocateSpotlight(
+            type="allocate_spotlight",
+            reason_short="Shift focus to progress",
+            actor_id="host",
+            target_guest_id=guest_ids[0],
+            weight=0.4,
+        )
+    return HostSignalStyle(
+        type="signal_style",
+        reason_short="Maintain coherence",
+        actor_id="host",
+        style="neutral",
+    )
+
+
 class ScriptedPolicy:
     def generate_host_action(
         self, obs: ObservationHost, world: WorldState
@@ -320,12 +380,14 @@ class InferenceEngine:
         )
         start = time.time()
         last_err: Optional[str] = None
+        last_out: Optional[str] = None
         for attempt in range(self._max_retries + 1):
             try:
                 out = self._ollama.generate(
                     model=self._host_model, prompt=prompt, temperature=self._temperature
                 )
-                obj = _extract_json_object(out)
+                last_out = out
+                obj = _normalize_host_obj(_extract_json_object(out), obs)
                 act = self._host_adapter.validate_python(obj)
                 mi = ModelInfo(
                     mode="ollama",
@@ -346,12 +408,15 @@ class InferenceEngine:
             retries=self._max_retries,
             latency_ms=int((time.time() - start) * 1000),
             prompt_chars=len(prompt),
+            output_chars=(len(last_out) if last_out is not None else None),
         )
         return (
-            self._scripted.generate_host_action(obs, world),
+            _failure_placeholder_host_action(obs),
             mi,
             (last_err or "inference_failed"),
-            None,
+            RawModelIO(prompt=prompt, output=last_out)
+            if last_out is not None
+            else None,
         )
 
     def generate_guest_action(
@@ -376,6 +441,7 @@ class InferenceEngine:
         )
         start = time.time()
         last_err: Optional[str] = None
+        last_out: Optional[str] = None
         for attempt in range(self._max_retries + 1):
             try:
                 out = self._ollama.generate(
@@ -383,7 +449,8 @@ class InferenceEngine:
                     prompt=prompt,
                     temperature=self._temperature,
                 )
-                obj = _extract_json_object(out)
+                last_out = out
+                obj = _normalize_guest_obj(_extract_json_object(out))
                 act = self._guest_adapter.validate_python(obj)
                 mi = ModelInfo(
                     mode="ollama",
@@ -404,10 +471,13 @@ class InferenceEngine:
             retries=self._max_retries,
             latency_ms=int((time.time() - start) * 1000),
             prompt_chars=len(prompt),
+            output_chars=(len(last_out) if last_out is not None else None),
         )
         return (
             self._scripted.generate_guest_action(obs, world),
             mi,
             (last_err or "inference_failed"),
-            None,
+            RawModelIO(prompt=prompt, output=last_out)
+            if last_out is not None
+            else None,
         )

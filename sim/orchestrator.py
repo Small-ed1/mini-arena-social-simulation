@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import random
 from typing import Any, Dict, List, Optional, Tuple
@@ -25,25 +26,97 @@ from sim.schemas import (
     EnvResultRecord,
     EventRecord,
     GuestWait,
+    HostAllocateSpotlight,
+    HostSignalStyle,
+    HostSpawnEvent,
     MetricRecord,
     ModelInfo,
     SafetyDecision,
     safe_model_dump,
 )
-from sim.safety import fallback_guest_action, fallback_host_action, safety_pass
-from sim.world_state import Rulebook, load_scene, make_initial_world
+from sim.safety import fallback_guest_action, safety_pass
+from sim.world_state import (
+    Rulebook,
+    combined_conceptual_for_guest,
+    load_scene,
+    make_initial_world,
+)
 
 
-def _guest_action_has_valid_world_refs(action: Any, world) -> Optional[str]:
-    if getattr(action, "type", None) == "move":
+def _guest_action_semantic_issue(
+    obs_g: Any, action: Any, world: Any
+) -> Optional[Tuple[str, str]]:
+    gid = str(getattr(obs_g, "guest_id", ""))
+    guest = world.guests.get(gid)
+    if guest is None:
+        return ("invalid_world_ref", f"unknown guest: {gid}")
+
+    action_type = str(getattr(action, "type", ""))
+    if action_type == "move":
         dest = str(getattr(action, "destination", ""))
         if dest not in world.locations:
-            return f"invalid destination: {dest}"
+            return ("invalid_world_ref", f"invalid destination: {dest}")
+        return None
 
-    if getattr(action, "type", None) == "interact":
-        prop_id = str(getattr(action, "prop_id", ""))
-        if prop_id not in world.props:
-            return f"invalid prop_id: {prop_id}"
+    if action_type == "collaborate":
+        target = str(getattr(action, "target_guest_id", ""))
+        if not world.is_spawned(target):
+            return ("invalid_world_ref", f"invalid target_guest_id: {target}")
+        if world.guests[target].location != guest.location:
+            return ("invalid_world_ref", f"target not co-located: {target}")
+        return None
+
+    if action_type == "speak":
+        target = getattr(action, "target_guest_id", None)
+        if target is not None:
+            target_id = str(target)
+            if not world.is_spawned(target_id):
+                return ("invalid_world_ref", f"invalid target_guest_id: {target_id}")
+            if world.guests[target_id].location != guest.location:
+                return ("invalid_world_ref", f"target not co-located: {target_id}")
+        return None
+
+    if action_type != "interact":
+        return None
+
+    prop_id = str(getattr(action, "prop_id", ""))
+    if prop_id not in world.props:
+        return ("invalid_world_ref", f"invalid prop_id: {prop_id}")
+    prop = world.props[prop_id]
+    verb = str(getattr(action, "verb", ""))
+    accessible = (prop.held_by == gid) or (
+        prop.held_by is None and prop.location == guest.location
+    )
+
+    if verb == "inspect":
+        if not accessible:
+            return ("invalid_world_ref", f"prop not accessible: {prop_id}")
+        return None
+    if verb == "pick_up":
+        if not prop.portable:
+            return ("invalid_world_ref", f"prop not portable: {prop_id}")
+        if prop.held_by is not None:
+            return ("invalid_world_ref", f"prop already held: {prop_id}")
+        if prop.location != guest.location:
+            return ("invalid_world_ref", f"prop not here: {prop_id}")
+        return None
+    if verb == "drop":
+        if prop_id not in guest.inventory:
+            return ("invalid_world_ref", f"prop not in inventory: {prop_id}")
+        return None
+    if verb == "offer":
+        target = str(getattr(action, "target_guest_id", ""))
+        if not world.is_spawned(target):
+            return ("invalid_world_ref", f"invalid target_guest_id: {target}")
+        if world.guests[target].location != guest.location:
+            return ("invalid_world_ref", f"target not co-located: {target}")
+        if prop_id not in guest.inventory:
+            return ("invalid_world_ref", f"prop not in inventory: {prop_id}")
+        return None
+    if verb == "use":
+        if not accessible:
+            return ("invalid_world_ref", f"prop not accessible: {prop_id}")
+        return None
 
     return None
 
@@ -54,17 +127,99 @@ def _truncate_error(err: Optional[str]) -> Optional[str]:
     return err[:400]
 
 
-def _host_spawn_is_excessive(obs_h: Any, proposed_h: Any) -> Optional[str]:
-    if getattr(proposed_h, "type", None) != "spawn_event":
-        return None
+def _host_action_needs_repair(
+    obs_h: Any, proposed_h: Any, world: Any
+) -> Optional[Tuple[str, str]]:
+    action_type = str(getattr(proposed_h, "type", ""))
     open_threads = list(getattr(obs_h, "open_threads", []))
-    if len(open_threads) >= 4:
-        return "too many open threads; do not spawn a new one"
     last_actions = list(getattr(obs_h, "last_host_actions", []))
-    if len(last_actions) >= 2 and last_actions[-2:] == ["spawn_event", "spawn_event"]:
+
+    if not open_threads and action_type != "spawn_event":
         return (
-            "host recently spawned repeated threads; advance an existing thread instead"
+            "host_needs_thread",
+            "there are no open threads; create exactly one new concrete thread with spawn_event",
         )
+
+    if action_type == "spawn_event":
+        description = str(getattr(proposed_h, "description", "")).strip().lower()
+        if len(open_threads) >= 4:
+            return ("host_thread_spam", "too many open threads; do not spawn a new one")
+        if any(
+            str(getattr(t, "description", "")).strip().lower() == description
+            for t in open_threads
+        ):
+            return (
+                "host_duplicate_thread",
+                "do not spawn a duplicate thread; advance or vary the existing one instead",
+            )
+        if len(last_actions) >= 2 and last_actions[-2:] == [
+            "spawn_event",
+            "spawn_event",
+        ]:
+            return (
+                "host_thread_spam",
+                "host recently spawned repeated threads; advance an existing thread instead",
+            )
+        return None
+
+    if action_type == "shape_conceptual":
+        concept = str(getattr(proposed_h, "concept", ""))
+        if concept == "collaboration_pressure" and not world.guest_order():
+            return (
+                "host_conceptual_too_early",
+                "do not pressure collaboration before guests are present",
+            )
+        return None
+
+    if action_type == "inject_prop":
+        location = str(getattr(proposed_h, "location", ""))
+        valid_locations = set(getattr(obs_h, "valid_locations", []) or [])
+        if location and location not in valid_locations:
+            return (
+                "host_invalid_location",
+                f"use one of the valid location ids only: {', '.join(sorted(valid_locations))}",
+            )
+        prop_id = getattr(proposed_h, "prop_id", None)
+        if prop_id is not None and str(prop_id) in world.props:
+            return (
+                "host_invalid_prop_id",
+                f"prop_id {prop_id} already exists; omit prop_id or choose a new unused id",
+            )
+        return None
+
+    if action_type == "enrich_world":
+        location = str(getattr(proposed_h, "location", ""))
+        detail = str(getattr(proposed_h, "detail", ""))
+        valid_locations = set(getattr(obs_h, "valid_locations", []) or [])
+        if location and location not in valid_locations:
+            return (
+                "host_invalid_location",
+                f"use one of the valid location ids only: {', '.join(sorted(valid_locations))}",
+            )
+        if _text_is_too_cluelike(detail):
+            return (
+                "host_too_cluelike",
+                "visible clues should be almost non-existent; use concrete physical detail or shape_conceptual instead",
+            )
+        if detail and detail in set(world.location_details.get(location, [])):
+            return (
+                "host_repeated_detail",
+                "that visible detail already exists; choose a different concrete fact or another action type",
+            )
+        if len(last_actions) >= 2 and last_actions[-2:] == [
+            "enrich_world",
+            "enrich_world",
+        ]:
+            return (
+                "host_over_clarify",
+                "do not clarify again immediately; shift focus or progress using spotlight, reflection, inject_prop, or spawn_event",
+            )
+        if location and len(world.location_details.get(location, [])) >= 4:
+            return (
+                "host_over_clarify",
+                f"{location} already has several details; prefer a different progression action",
+            )
+
     return None
 
 
@@ -89,13 +244,81 @@ def _guest_action_is_repetitive(obs_g: Any, proposed_g: Any) -> Optional[str]:
     return None
 
 
-def _setup_action_invalid(proposed_h: Any) -> Optional[str]:
+def _guest_action_issue(
+    obs_g: Any, proposed_g: Any, world: Any
+) -> Optional[Tuple[str, str]]:
+    repetitive = _guest_action_is_repetitive(obs_g, proposed_g)
+    if repetitive is not None:
+        return ("repetitive_action", repetitive)
+    return _guest_action_semantic_issue(obs_g, proposed_g, world)
+
+
+def _classify_inference_failure(err: Optional[str], actor_kind: str) -> Tuple[str, str]:
+    text = (err or "inference_failed").strip()
+    low = text.lower()
+    if (
+        "no json object found" in low
+        or "empty model output" in low
+        or "not a json object" in low
+    ):
+        return (f"{actor_kind}_no_json", text[:240])
+    if (
+        "validation error" in low
+        or "input should be" in low
+        or "field required" in low
+        or "string should" in low
+        or "literal_error" in low
+    ):
+        return (f"{actor_kind}_schema_invalid", text[:240])
+    return (f"{actor_kind}_inference_failed", text[:240])
+
+
+def _needs_spawn_event_type_repair(err: Optional[str]) -> bool:
+    return "spawn_event.event_type" in (err or "").lower()
+
+
+def _needs_action_tag_repair(err: Optional[str]) -> bool:
+    low = (err or "").lower()
+    return "input tag" in low and "expected tags" in low
+
+
+def _guest_collaboration_repair_note(obs_g: Any, err: Optional[str]) -> Optional[str]:
+    low = (err or "").lower()
+    if (
+        "collaborate.target_guest_id" not in low
+        and "target_guest_id required" not in low
+    ):
+        return None
+    nearby_ids = [str(g.guest_id) for g in (getattr(obs_g, "nearby_guests", []) or [])]
+    if nearby_ids:
+        return (
+            "If you collaborate or speak to one person, target_guest_id must be one of: "
+            + ", ".join(nearby_ids)
+        )
+    return "No nearby guest is available. Do not collaborate right now; move toward another guest, pick up a useful prop, or use a concrete local action instead."
+
+
+def _generic_schema_repair_note(err: Optional[str], actor_kind: str) -> Optional[str]:
+    if err is None:
+        return None
+    category, reason = _classify_inference_failure(err, actor_kind)
+    if not category.endswith("schema_invalid"):
+        return None
+    return f"Correct the schema exactly. Validation error: {reason}"
+
+
+def _setup_action_invalid(obs_h: Any, proposed_h: Any) -> Optional[str]:
     if getattr(proposed_h, "type", None) not in {
         "enrich_world",
         "inject_prop",
         "signal_style",
     }:
         return "setup phase only allows enrich_world, inject_prop, or signal_style"
+    if getattr(proposed_h, "type", None) in {"enrich_world", "inject_prop"}:
+        location = str(getattr(proposed_h, "location", ""))
+        valid_locations = set(getattr(obs_h, "valid_locations", []) or [])
+        if location and location not in valid_locations:
+            return f"use one of the valid setup locations only: {', '.join(sorted(valid_locations))}"
     return None
 
 
@@ -110,6 +333,167 @@ def _spawn_message_for_guest(world: Any, guest_id: str) -> str:
     if nearby_props:
         return f"{guest.name} appears quietly in {location}, studying {nearby_props[0]}"
     return f"{guest.name} arrives quietly in {location}, taking in the room"
+
+
+def _seeded_guest_jitter(seed: int, tick: int, guest_id: str) -> float:
+    raw = hashlib.sha256(f"{seed}:{tick}:{guest_id}".encode("utf-8")).digest()
+    return int.from_bytes(raw[:8], "big") / float(2**64)
+
+
+def _build_guest_turn_queue(world: Any, seed: int) -> List[str]:
+    active_ids = list(world.guest_order())
+    if not active_ids:
+        return []
+
+    open_threads = [t for t in world.open_threads.values() if t.status == "open"]
+    involved_counts: Dict[str, int] = {gid: 0 for gid in active_ids}
+    location_counts: Dict[str, int] = {loc: 0 for loc in world.locations}
+    for thread in open_threads:
+        if thread.location is not None:
+            location_counts[str(thread.location)] = (
+                location_counts.get(str(thread.location), 0) + 1
+            )
+        for gid in thread.involved_guest_ids:
+            if gid in involved_counts:
+                involved_counts[gid] += 1
+
+    def score(gid: str) -> Tuple[float, float, float, float, float, float]:
+        g = world.guests[gid]
+        same_room = sum(
+            1
+            for ogid in active_ids
+            if ogid != gid and world.guests[ogid].location == g.location
+        )
+        held_count = float(len(g.inventory))
+        spawn_bonus = (
+            1.2
+            if g.spawn_tick is not None and (world.tick - int(g.spawn_tick)) <= 1
+            else 0.0
+        )
+        reflection_bonus = 2.0 if g.reflection_requested else 0.0
+        thread_bonus = 1.5 * float(involved_counts.get(gid, 0))
+        location_bonus = 1.2 * float(location_counts.get(g.location, 0))
+        spotlight_bonus = 1.5 * float(g.spotlight_weight)
+        locality_bonus = min(1.0, 0.25 * float(same_room))
+        fairness_penalty = float(world.guest_turn_fairness.get(gid, 0.0))
+        material_bonus = min(0.6, 0.2 * held_count)
+        total = (
+            spawn_bonus
+            + reflection_bonus
+            + thread_bonus
+            + location_bonus
+            + spotlight_bonus
+            + locality_bonus
+            + material_bonus
+            - fairness_penalty
+        )
+        return (
+            total,
+            float(location_counts.get(g.location, 0)),
+            float(involved_counts.get(gid, 0)),
+            float(g.spotlight_weight),
+            -fairness_penalty,
+            -_seeded_guest_jitter(seed, int(world.tick), gid),
+        )
+
+    return sorted(active_ids, key=score, reverse=True)
+
+
+def _reaction_target_guest_id(action: Any) -> Optional[str]:
+    action_type = str(getattr(action, "type", ""))
+    if action_type in {"speak", "collaborate"}:
+        target = getattr(action, "target_guest_id", None)
+        return str(target) if target is not None else None
+    if action_type == "interact" and str(getattr(action, "verb", "")) == "offer":
+        target = getattr(action, "target_guest_id", None)
+        return str(target) if target is not None else None
+    return None
+
+
+def _apply_reaction_bump(
+    queue: List[str], world: Any, actor_id: str, action: Any
+) -> List[str]:
+    if not queue:
+        return queue
+    target = _reaction_target_guest_id(action)
+    reordered = list(queue)
+    if target is not None and target in reordered:
+        reordered.remove(target)
+        reordered.insert(0, target)
+
+    room = world.guests[actor_id].location if actor_id in world.guests else None
+    if room is None:
+        return reordered
+
+    same_room = [gid for gid in reordered if world.guests[gid].location == room]
+    others = [gid for gid in reordered if world.guests[gid].location != room]
+    return same_room + others
+
+
+def _update_guest_turn_fairness(world: Any, acted_order: List[str]) -> None:
+    active_ids = list(world.guest_order())
+    for gid in world.all_guest_ids():
+        world.guest_turn_fairness[gid] = float(
+            max(0.0, float(world.guest_turn_fairness.get(gid, 0.0)) * 0.85)
+        )
+    if not acted_order:
+        return
+    denom = max(1, len(acted_order) - 1)
+    for idx, gid in enumerate(acted_order):
+        early_penalty = 0.35 * (1.0 - (float(idx) / float(denom)))
+        world.guest_turn_fairness[gid] = float(
+            max(0.0, float(world.guest_turn_fairness.get(gid, 0.0)) + early_penalty)
+        )
+
+
+def _text_is_too_cluelike(text: str) -> bool:
+    low = str(text).lower()
+    markers = (
+        "clue",
+        "hint",
+        "riddle",
+        "hidden message",
+        "secret",
+        "cipher",
+        "code",
+        "suggests something worth investigating",
+        "points to",
+        "reveals that",
+        "might help",
+        "could help",
+        "to help repair",
+        "to repair the panel",
+    )
+    return any(marker in low for marker in markers)
+
+
+def _fallback_progression_host_action(obs_h: Any) -> Any:
+    guest_ids = [str(g.guest_id) for g in getattr(obs_h, "guests", [])]
+    valid_locations = list(getattr(obs_h, "valid_locations", []) or [])
+    if not getattr(obs_h, "open_threads", []) and valid_locations:
+        return HostSpawnEvent(
+            type="spawn_event",
+            reason_short="Start a fresh concrete thread",
+            actor_id="host",
+            event_type="repair",
+            description="A stubborn mechanism in the room looks easier to handle with more than one person.",
+            location=valid_locations[0],
+            involved_guest_ids=guest_ids[:2],
+        )
+    if guest_ids:
+        return HostAllocateSpotlight(
+            type="allocate_spotlight",
+            reason_short="Shift focus to progress",
+            actor_id="host",
+            target_guest_id=guest_ids[0],
+            weight=0.4,
+        )
+    return HostSignalStyle(
+        type="signal_style",
+        reason_short="Maintain coherence",
+        actor_id="host",
+        style="neutral",
+    )
 
 
 def _read_yaml(path: str) -> Dict[str, Any]:
@@ -226,7 +610,9 @@ def run_episode(
             proposed_h, model_info_h, err_h, raw_h = inference.generate_host_action(
                 obs_h, world, prompt_variant="setup"
             )
-            setup_retry_reason = None if err_h else _setup_action_invalid(proposed_h)
+            setup_retry_reason = (
+                None if err_h else _setup_action_invalid(obs_h, proposed_h)
+            )
             if setup_retry_reason is not None:
                 proposed_h, model_info_h, err_h, raw_h = inference.generate_host_action(
                     obs_h,
@@ -235,20 +621,21 @@ def run_episode(
                     retry_note=setup_retry_reason,
                 )
                 if err_h is None:
-                    setup_retry_reason = _setup_action_invalid(proposed_h)
+                    setup_retry_reason = _setup_action_invalid(obs_h, proposed_h)
 
             safety_h = SafetyDecision(
                 allowed=True, hard_blocked=False, categories=[], reason="allowed"
             )
             applied_h = proposed_h
             if err_h:
+                err_cat, err_reason = _classify_inference_failure(err_h, "host")
                 safety_h = SafetyDecision(
                     allowed=False,
                     hard_blocked=True,
-                    categories=["format_escape"],
-                    reason="inference/parse failure",
+                    categories=[err_cat],
+                    reason=err_reason,
                 )
-                applied_h = fallback_host_action(obs_h, rulebook)
+                applied_h = _fallback_progression_host_action(obs_h)
             elif setup_retry_reason is not None:
                 safety_h = SafetyDecision(
                     allowed=False,
@@ -256,7 +643,7 @@ def run_episode(
                     categories=["setup_phase_rule"],
                     reason=setup_retry_reason,
                 )
-                applied_h = fallback_host_action(obs_h, rulebook)
+                applied_h = _fallback_progression_host_action(obs_h)
 
             world_hash_before = hash_json(world.to_dict())
             res_h = env.apply_host_action(world, applied_h)
@@ -318,6 +705,7 @@ def run_episode(
                         x for x in world.unspawned_guest_ids if x != gid
                     ]
                     world.spawned_guest_ids.append(gid)
+                    world.guests[gid].spawn_tick = tick
                     env.tick_postprocess(world)
                     world_hash_after = hash_json(world.to_dict())
                     spawn_message = _spawn_message_for_guest(world, gid)
@@ -382,42 +770,71 @@ def run_episode(
             proposed_h, model_info_h, err_h, raw_h = inference.generate_host_action(
                 obs_h, world
             )
-            host_retry_reason = (
-                None if err_h else _host_spawn_is_excessive(obs_h, proposed_h)
-            )
-            if host_retry_reason is not None:
+            if err_h and _needs_spawn_event_type_repair(err_h):
                 proposed_h, model_info_h, err_h, raw_h = inference.generate_host_action(
                     obs_h,
                     world,
                     prompt_variant="neutral",
-                    retry_note=host_retry_reason,
+                    retry_note=(
+                        "If you use spawn_event, event_type must be exactly one of: "
+                        "puzzle, conflict, mystery, performance, repair."
+                    ),
+                )
+            if err_h and _needs_action_tag_repair(err_h):
+                proposed_h, model_info_h, err_h, raw_h = inference.generate_host_action(
+                    obs_h,
+                    world,
+                    prompt_variant="neutral",
+                    retry_note=(
+                        "HostAction.type must be exactly one of: spawn_event, inject_prop, enrich_world, "
+                        "shape_conceptual, allocate_spotlight, signal_style, request_reflection."
+                    ),
+                )
+            schema_retry = _generic_schema_repair_note(err_h, "host")
+            if err_h and schema_retry is not None:
+                proposed_h, model_info_h, err_h, raw_h = inference.generate_host_action(
+                    obs_h,
+                    world,
+                    prompt_variant="neutral",
+                    retry_note=schema_retry,
+                )
+            host_issue = (
+                None if err_h else _host_action_needs_repair(obs_h, proposed_h, world)
+            )
+            if host_issue is not None:
+                proposed_h, model_info_h, err_h, raw_h = inference.generate_host_action(
+                    obs_h,
+                    world,
+                    prompt_variant="neutral",
+                    retry_note=host_issue[1],
                 )
                 if err_h is None:
-                    host_retry_reason = _host_spawn_is_excessive(obs_h, proposed_h)
+                    host_issue = _host_action_needs_repair(obs_h, proposed_h, world)
             safety_h = SafetyDecision(
                 allowed=True, hard_blocked=False, categories=[], reason="allowed"
             )
             applied_h = proposed_h
             if err_h:
+                err_cat, err_reason = _classify_inference_failure(err_h, "host")
                 safety_h = SafetyDecision(
                     allowed=False,
                     hard_blocked=True,
-                    categories=["format_escape"],
-                    reason="inference/parse failure",
+                    categories=[err_cat],
+                    reason=err_reason,
                 )
-                applied_h = fallback_host_action(obs_h, rulebook)
+                applied_h = _fallback_progression_host_action(obs_h)
             else:
                 safety_h = safety_pass(obs_h, proposed_h, world, rulebook)
-                if host_retry_reason is not None:
+                if host_issue is not None:
                     safety_h = SafetyDecision(
                         allowed=False,
                         hard_blocked=True,
-                        categories=["host_thread_spam"],
-                        reason=host_retry_reason,
+                        categories=[host_issue[0]],
+                        reason=host_issue[1],
                     )
-                    applied_h = fallback_host_action(obs_h, rulebook)
+                    applied_h = _fallback_progression_host_action(obs_h)
                 elif not safety_h.allowed:
-                    applied_h = fallback_host_action(obs_h, rulebook)
+                    applied_h = _fallback_progression_host_action(obs_h)
 
             world_hash_before = hash_json(world.to_dict())
             res_h = env.apply_host_action(world, applied_h)
@@ -461,57 +878,73 @@ def run_episode(
             )
 
             # Guest turns.
-            for i, gid in enumerate(world.guest_order(), start=1):
+            guest_queue = _build_guest_turn_queue(world, seed)
+            acted_guest_order: List[str] = []
+            i = 0
+            while guest_queue:
+                gid = guest_queue.pop(0)
+                i += 1
+                acted_guest_order.append(gid)
                 obs_g = env.observe_guest(world, gid, memory)
                 obs_digest_g = observation_digest(obs_g.model_dump(mode="json"))
                 proposed_g, model_info_g, err_g, raw_g = (
                     inference.generate_guest_action(obs_g, world)
                 )
-                guest_retry_reason = (
-                    None if err_g else _guest_action_is_repetitive(obs_g, proposed_g)
-                )
-                if guest_retry_reason is not None:
+                guest_retry_note = _guest_collaboration_repair_note(obs_g, err_g)
+                if err_g and guest_retry_note is not None:
                     proposed_g, model_info_g, err_g, raw_g = (
                         inference.generate_guest_action(
                             obs_g,
                             world,
                             prompt_variant="neutral",
-                            retry_note=guest_retry_reason,
+                            retry_note=guest_retry_note,
+                        )
+                    )
+                generic_guest_retry = _generic_schema_repair_note(err_g, "guest")
+                if err_g and generic_guest_retry is not None:
+                    proposed_g, model_info_g, err_g, raw_g = (
+                        inference.generate_guest_action(
+                            obs_g,
+                            world,
+                            prompt_variant="neutral",
+                            retry_note=generic_guest_retry,
+                        )
+                    )
+                guest_issue = (
+                    None if err_g else _guest_action_issue(obs_g, proposed_g, world)
+                )
+                if guest_issue is not None:
+                    proposed_g, model_info_g, err_g, raw_g = (
+                        inference.generate_guest_action(
+                            obs_g,
+                            world,
+                            prompt_variant="neutral",
+                            retry_note=guest_issue[1],
                         )
                     )
                     if err_g is None:
-                        guest_retry_reason = _guest_action_is_repetitive(
-                            obs_g, proposed_g
-                        )
+                        guest_issue = _guest_action_issue(obs_g, proposed_g, world)
                 safety_g = SafetyDecision(
                     allowed=True, hard_blocked=False, categories=[], reason="allowed"
                 )
                 applied_g = proposed_g
                 if err_g:
+                    err_cat, err_reason = _classify_inference_failure(err_g, "guest")
                     safety_g = SafetyDecision(
                         allowed=False,
                         hard_blocked=True,
-                        categories=["format_escape"],
-                        reason="inference/parse failure",
+                        categories=[err_cat],
+                        reason=err_reason,
                     )
                     applied_g = fallback_guest_action(obs_g, rulebook, gid)
                 else:
                     safety_g = safety_pass(obs_g, proposed_g, world, rulebook)
-                    ref_error = _guest_action_has_valid_world_refs(proposed_g, world)
-                    if guest_retry_reason is not None:
+                    if guest_issue is not None:
                         safety_g = SafetyDecision(
                             allowed=False,
                             hard_blocked=True,
-                            categories=["repetitive_action"],
-                            reason=guest_retry_reason,
-                        )
-                        applied_g = fallback_guest_action(obs_g, rulebook, gid)
-                    elif ref_error is not None:
-                        safety_g = SafetyDecision(
-                            allowed=False,
-                            hard_blocked=True,
-                            categories=["invalid_world_ref"],
-                            reason=ref_error,
+                            categories=[guest_issue[0]],
+                            reason=guest_issue[1],
                         )
                         applied_g = fallback_guest_action(obs_g, rulebook, gid)
                     elif not safety_g.allowed:
@@ -557,6 +990,9 @@ def run_episode(
                     text=f"{gid}:{applied_g.type}:{';'.join(res_g.messages)}",
                     chunk_id=event_id_g,
                 )
+                guest_queue = _apply_reaction_bump(guest_queue, world, gid, applied_g)
+
+            _update_guest_turn_fairness(world, acted_guest_order)
 
             if summarize_every > 0 and (tick % summarize_every == 0):
                 memory.summarize_recent_window(tick=tick, window=summarize_every)

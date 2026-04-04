@@ -34,6 +34,22 @@ def test_host_enrich_world_validates() -> None:
     assert act.type == "enrich_world"
 
 
+def test_host_shape_conceptual_validates() -> None:
+    ta = TypeAdapter(HostAction)
+    act = ta.validate_python(
+        {
+            "type": "shape_conceptual",
+            "reason_short": "Pressure collaboration",
+            "actor_id": "host",
+            "concept": "collaboration_pressure",
+            "scope": "location",
+            "location": "workshop",
+            "intensity": 0.7,
+        }
+    )
+    assert act.type == "shape_conceptual"
+
+
 def test_host_action_extra_field_fails() -> None:
     ta = TypeAdapter(HostAction)
     with pytest.raises(ValidationError):

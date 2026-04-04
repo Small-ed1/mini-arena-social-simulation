@@ -38,6 +38,10 @@ arena:
       prop_type: "flashlight"
       location: "foyer"
       portable: true
+    - id: "prop_panel"
+      prop_type: "panel"
+      location: "foyer"
+      portable: false
     - id: "prop_curtain"
       prop_type: "curtain"
       location: "stage_room"
@@ -58,6 +62,6 @@ arena:
     - "offer"
   initial_threads:
     - id: "thread_puzzle_1"
-      thread_type: "puzzle"
+      thread_type: "repair"
       status: "open"
-      description: "A locked panel somewhere responds to a foam key and mirrored light."
+      description: "A heavy panel in the foyer looks easier to operate with coordinated light and more than one set of hands."

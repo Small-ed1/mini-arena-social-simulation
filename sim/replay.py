@@ -7,6 +7,7 @@ from pydantic import TypeAdapter
 from sim.checkpoint import world_from_dict
 from sim.env import Environment
 from sim.logging_utils import hash_json, read_json, read_jsonl
+from sim.orchestrator import _update_guest_turn_fairness
 from sim.schemas import EventRecord
 from sim.world_state import Rulebook
 
@@ -34,7 +35,10 @@ def replay_run(run_dir: str) -> Tuple[bool, List[str]]:
     errors: List[str] = []
     ok = True
 
-    for raw in read_jsonl(events_path):
+    raw_events = list(read_jsonl(events_path))
+    acted_guest_order: List[str] = []
+
+    for idx, raw in enumerate(raw_events):
         ev = adapter.validate_python(raw)
         # The canonical world state includes tick.
         world.tick = int(ev.tick)
@@ -46,6 +50,7 @@ def replay_run(run_dir: str) -> Tuple[bool, List[str]]:
             )
             # Continue to collect more errors.
 
+        processed = False
         if ev.phase == "guest" and ev.turn_index == -1:
             gid = str(ev.actor_id)
             if gid in world.unspawned_guest_ids:
@@ -54,18 +59,30 @@ def replay_run(run_dir: str) -> Tuple[bool, List[str]]:
                 ]
             if gid not in world.spawned_guest_ids:
                 world.spawned_guest_ids.append(gid)
+            world.guests[gid].spawn_tick = int(ev.tick)
             env.tick_postprocess(world)
+            processed = True
         elif ev.phase == "host":
             env.apply_host_action(world, ev.applied_action)  # type: ignore[arg-type]
         else:
             env.apply_guest_action(world, ev.actor_id, ev.applied_action)
+            if ev.turn_index >= 1:
+                acted_guest_order.append(str(ev.actor_id))
 
-        env.tick_postprocess(world)
+        if not processed:
+            env.tick_postprocess(world)
         after = hash_json(world.to_dict())
         if after != ev.env.world_hash_after:
             ok = False
             errors.append(
                 f"tick {ev.tick} {ev.phase}#{ev.turn_index}: world_hash_after mismatch ({after} != {ev.env.world_hash_after})"
             )
+
+        next_tick = None
+        if idx + 1 < len(raw_events):
+            next_tick = int(raw_events[idx + 1]["tick"])
+        if next_tick is None or next_tick != int(ev.tick):
+            _update_guest_turn_fairness(world, acted_guest_order)
+            acted_guest_order = []
 
     return ok, errors

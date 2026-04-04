@@ -10,6 +10,7 @@ from sim.schemas import (
     HostEnrichWorld,
     HostInjectProp,
     HostRequestReflection,
+    HostShapeConceptual,
     HostSignalStyle,
     HostSpawnEvent,
     ObservationGuest,
@@ -17,7 +18,14 @@ from sim.schemas import (
     PropSnapshot,
     ThreadSnapshot,
 )
-from sim.world_state import OpenThread, Prop, WorldState, _round_float
+from sim.world_state import (
+    CONCEPTUAL_AXES,
+    OpenThread,
+    Prop,
+    WorldState,
+    _round_float,
+    combined_conceptual_for_guest,
+)
 
 
 @dataclass
@@ -53,15 +61,21 @@ class Environment:
                 thread_type=t.thread_type,  # type: ignore[arg-type]
                 status=t.status,  # type: ignore[arg-type]
                 description=t.description,
+                location=t.location,
             )
             for t in (world.open_threads[k] for k in sorted(world.open_threads))
+            if t.status == "open"
         ]
 
         world_summary = self._summarize_world_for_host(world)
+        conceptual_summary = self._summarize_conceptual_for_host(world)
 
         return ObservationHost(
             tick=world.tick,
             world_summary=world_summary,
+            conceptual_summary=conceptual_summary,
+            valid_locations=sorted(world.locations),
+            valid_concepts=list(CONCEPTUAL_AXES),
             guests=guests,
             open_threads=open_threads,
             memory_chunks=mem_chunks,
@@ -133,6 +147,7 @@ class Environment:
                 thread_type=t.thread_type,  # type: ignore[arg-type]
                 status=t.status,  # type: ignore[arg-type]
                 description=t.description,
+                location=t.location,
             )
             for t in (world.open_threads[k] for k in sorted(world.open_threads))
             if t.status == "open"
@@ -140,6 +155,7 @@ class Environment:
 
         local_view = self._summarize_local_view(world, guest_id)
         persona_text = self._persona_text(memory, guest_id)
+        felt_state = self._felt_state(world, guest_id)
 
         return ObservationGuest(
             tick=world.tick,
@@ -149,6 +165,7 @@ class Environment:
             location=g.location,
             valid_locations=sorted(world.locations),
             local_view=local_view,
+            felt_state=felt_state,
             nearby_guests=nearby_guests,
             nearby_props=nearby_props,
             open_threads=open_threads,
@@ -189,6 +206,29 @@ class Environment:
                 world.location_details[str(action.location)] = details[-8:]
             messages.append(f"enriched {action.location}")
 
+        elif isinstance(action, HostShapeConceptual):
+            concept = str(action.concept)
+            if action.scope == "all":
+                world.conceptual_global[concept] = float(action.intensity)
+                messages.append(f"conceptual {concept}=global:{action.intensity:.2f}")
+            elif action.scope == "location":
+                if action.location not in world.locations:
+                    return EnvResult(False, [f"unknown location: {action.location}"])
+                world.conceptual_by_location[str(action.location)][concept] = float(
+                    action.intensity
+                )
+                messages.append(
+                    f"conceptual {concept}=location:{action.location}:{action.intensity:.2f}"
+                )
+            else:
+                tg = str(action.target_guest_id)
+                if not world.is_spawned(tg):
+                    return EnvResult(False, [f"unknown target_guest_id: {tg}"])
+                world.conceptual_by_guest[tg][concept] = float(action.intensity)
+                messages.append(
+                    f"conceptual {concept}=guest:{tg}:{action.intensity:.2f}"
+                )
+
         elif isinstance(action, HostAllocateSpotlight):
             if not world.is_spawned(str(action.target_guest_id)):
                 return EnvResult(False, [f"unknown guest: {action.target_guest_id}"])
@@ -222,6 +262,9 @@ class Environment:
                 thread_type=action.event_type,
                 status="open",
                 description=action.description,
+                location=(
+                    str(action.location) if action.location is not None else None
+                ),
                 involved_guest_ids=[str(x) for x in action.involved_guest_ids],
             )
             messages.append(f"spawned thread {tid} ({action.event_type})")
@@ -263,10 +306,16 @@ class Environment:
         if atype == "speak":
             speech = str(action.speech)
             target = getattr(action, "target_guest_id", None)
+            levels = combined_conceptual_for_guest(world, guest_id)
             if target is not None and str(target) in g.trust:
-                g.trust[str(target)] = float(min(1.0, g.trust[str(target)] + 0.02))
+                trust_bump = 0.02 + (
+                    0.03 * float(levels.get("collaboration_pressure", 0.0))
+                )
+                g.trust[str(target)] = float(
+                    min(1.0, g.trust[str(target)] + trust_bump)
+                )
                 g.familiarity[str(target)] = float(
-                    min(1.0, g.familiarity[str(target)] + 0.02)
+                    min(1.0, g.familiarity[str(target)] + trust_bump)
                 )
             g.last_action = "speak"
             g.mood["engaged_bored"] = float(
@@ -296,11 +345,29 @@ class Environment:
                 return EnvResult(False, [f"unknown target_guest_id: {target}"])
             if world.guests[target].location != g.location:
                 return EnvResult(False, ["target not co-located"])
-            g.trust[target] = float(min(1.0, g.trust.get(target, 0.5) + 0.03))
-            g.familiarity[target] = float(
-                min(1.0, g.familiarity.get(target, 0.2) + 0.03)
+            levels = combined_conceptual_for_guest(world, guest_id)
+            collab_bonus = 0.03 + (
+                0.05 * float(levels.get("collaboration_pressure", 0.0))
             )
+            g.trust[target] = float(min(1.0, g.trust.get(target, 0.5) + collab_bonus))
+            g.familiarity[target] = float(
+                min(1.0, g.familiarity.get(target, 0.2) + collab_bonus)
+            )
+            g.tension[target] = float(max(0.0, g.tension.get(target, 0.0) - 0.02))
             g.last_action = f"collaborate:{target}"
+            g.mood["hopeful_cynical"] = float(
+                min(1.0, g.mood.get("hopeful_cynical", 0.0) + 0.04)
+            )
+            g.mood["calm_agitated"] = float(
+                min(1.0, g.mood.get("calm_agitated", 0.0) + 0.03)
+            )
+            loc_levels = world.conceptual_by_location.get(g.location) or {}
+            if "collaboration_pressure" in loc_levels:
+                loc_levels["collaboration_pressure"] = float(
+                    max(
+                        0.0, float(loc_levels.get("collaboration_pressure", 0.0)) - 0.06
+                    )
+                )
             messages.append(f"collaborated with {target}")
             return EnvResult(True, messages)
 
@@ -367,14 +434,25 @@ class Environment:
                 p.state["used_count"] = int(p.state.get("used_count", 0)) + 1
                 p.state["last_used_tick"] = world.tick
                 g.last_action = f"use:{pid}"
-                # Tiny thread nudge: if foam_key used, close first open puzzle.
+                nearby_helpers = [
+                    ogid
+                    for ogid in world.guest_order()
+                    if ogid != guest_id and world.guests[ogid].location == g.location
+                ]
+                # Concrete collaboration gate: the panel is easier with another guest present.
                 if p.prop_type == "foam_key":
-                    for tid in sorted(world.open_threads):
-                        t = world.open_threads[tid]
-                        if t.thread_type == "puzzle" and t.status == "open":
-                            t.status = "closed"
-                            messages.append(f"closed thread {tid}")
-                            break
+                    if not nearby_helpers:
+                        messages.append("the mechanism resists a solitary attempt")
+                    else:
+                        for tid in sorted(world.open_threads):
+                            t = world.open_threads[tid]
+                            if (
+                                t.thread_type in ("repair", "puzzle")
+                                and t.status == "open"
+                            ):
+                                t.status = "closed"
+                                messages.append(f"closed thread {tid}")
+                                break
                 return EnvResult(True, [f"used {pid}"] + messages)
 
             return EnvResult(False, [f"unknown interact verb: {verb}"])
@@ -405,6 +483,75 @@ class Environment:
                 world.guests[gid].spotlight_weight = float(
                     max(0.0, float(world.guests[gid].spotlight_weight)) / total
                 )
+
+        # Hidden conceptual pressures influence goals and mood without exposing raw state.
+        for gid in active_ids:
+            g = world.guests[gid]
+            levels = combined_conceptual_for_guest(world, gid)
+            nearby = [
+                ogid
+                for ogid in active_ids
+                if ogid != gid and world.guests[ogid].location == g.location
+            ]
+
+            collab = float(levels.get("collaboration_pressure", 0.0))
+            unease = float(levels.get("unease", 0.0))
+            friction = float(levels.get("social_friction", 0.0))
+            urgency = float(levels.get("urgency", 0.0))
+
+            if collab > 0.0:
+                if nearby:
+                    g.mood["engaged_bored"] = float(
+                        min(1.0, g.mood.get("engaged_bored", 0.0) + 0.02 * collab)
+                    )
+                    for ogid in nearby:
+                        g.familiarity[ogid] = float(
+                            min(1.0, g.familiarity.get(ogid, 0.2) + 0.01 * collab)
+                        )
+                else:
+                    g.mood["calm_agitated"] = float(
+                        max(-1.0, g.mood.get("calm_agitated", 0.0) - 0.02 * collab)
+                    )
+                    g.mood["engaged_bored"] = float(
+                        min(1.0, g.mood.get("engaged_bored", 0.0) + 0.01 * collab)
+                    )
+
+            if unease > 0.0:
+                g.mood["calm_agitated"] = float(
+                    max(-1.0, g.mood.get("calm_agitated", 0.0) - 0.04 * unease)
+                )
+                g.mood["hopeful_cynical"] = float(
+                    max(-1.0, g.mood.get("hopeful_cynical", 0.0) - 0.03 * unease)
+                )
+
+            if urgency > 0.0:
+                g.mood["engaged_bored"] = float(
+                    min(1.0, g.mood.get("engaged_bored", 0.0) + 0.03 * urgency)
+                )
+                g.mood["calm_agitated"] = float(
+                    max(-1.0, g.mood.get("calm_agitated", 0.0) - 0.01 * urgency)
+                )
+
+            if friction > 0.0 and nearby:
+                for ogid in nearby:
+                    g.tension[ogid] = float(
+                        min(1.0, g.tension.get(ogid, 0.0) + 0.01 * friction)
+                    )
+                    g.trust[ogid] = float(
+                        max(0.0, g.trust.get(ogid, 0.5) - 0.005 * friction)
+                    )
+
+        # Conceptual state should bias behavior, not trap the run in one mode forever.
+        for axis in world.conceptual_global:
+            world.conceptual_global[axis] = float(
+                max(0.0, world.conceptual_global[axis] * 0.96)
+            )
+        for loc, levels in world.conceptual_by_location.items():
+            for axis in levels:
+                levels[axis] = float(max(0.0, levels[axis] * 0.94))
+        for gid, levels in world.conceptual_by_guest.items():
+            for axis in levels:
+                levels[axis] = float(max(0.0, levels[axis] * 0.95))
 
     def _next_prop_id(self, world: WorldState, prop_type: str) -> str:
         base = f"prop_{prop_type}"
@@ -485,12 +632,47 @@ class Environment:
             parts.append("RecentDetails=" + " || ".join(detail_bits[:4]))
         return " | ".join(parts)
 
+    def _summarize_conceptual_for_host(self, world: WorldState) -> str:
+        parts: List[str] = []
+        global_bits = [
+            f"{k}:{world.conceptual_global.get(k, 0.0):.2f}"
+            for k in CONCEPTUAL_AXES
+            if float(world.conceptual_global.get(k, 0.0)) > 0.05
+        ]
+        if global_bits:
+            parts.append("Global=" + ",".join(global_bits))
+        loc_bits = []
+        for loc in sorted(world.conceptual_by_location):
+            vals = world.conceptual_by_location.get(loc) or {}
+            active = [
+                f"{k}:{vals.get(k, 0.0):.2f}"
+                for k in CONCEPTUAL_AXES
+                if float(vals.get(k, 0.0)) > 0.05
+            ]
+            if active:
+                loc_bits.append(f"{loc}[{'/'.join(active)}]")
+        if loc_bits:
+            parts.append("Location=" + " || ".join(loc_bits[:4]))
+        guest_bits = []
+        for gid in world.guest_order():
+            vals = world.conceptual_by_guest.get(gid) or {}
+            active = [
+                f"{k}:{vals.get(k, 0.0):.2f}"
+                for k in CONCEPTUAL_AXES
+                if float(vals.get(k, 0.0)) > 0.05
+            ]
+            if active:
+                guest_bits.append(f"{gid}[{'/'.join(active)}]")
+        if guest_bits:
+            parts.append("Guest=" + " || ".join(guest_bits[:4]))
+        return " ; ".join(parts) or "No significant conceptual pressure active"
+
     def _summarize_local_view(self, world: WorldState, guest_id: str) -> str:
         g = world.guests[guest_id]
         loc_desc = world.locations.get(g.location, "")
         loc_details = world.location_details.get(g.location, [])
         props_here = [
-            pid
+            f"{pid}:{world.props[pid].prop_type}"
             for pid in sorted(world.props)
             if world.props[pid].location == g.location
             and world.props[pid].held_by is None
@@ -504,6 +686,36 @@ class Environment:
             f"Location={g.location}. {loc_desc} Details={loc_details[-2:]} "
             f"VisibleProps={props_here[:6]} OtherGuests={others[:6]}"
         )
+
+    def _felt_state(self, world: WorldState, guest_id: str) -> str:
+        g = world.guests[guest_id]
+        levels = combined_conceptual_for_guest(world, guest_id)
+        nearby = [
+            ogid
+            for ogid in world.guest_order()
+            if ogid != guest_id and world.guests[ogid].location == g.location
+        ]
+        bits: List[str] = []
+        if levels.get("collaboration_pressure", 0.0) >= 0.45:
+            if nearby:
+                bits.append(
+                    "Shared effort seems more promising than acting alone right now."
+                )
+            else:
+                bits.append("Working alone feels a little less promising than usual.")
+        if levels.get("unease", 0.0) >= 0.35:
+            bits.append(
+                "The atmosphere keeps you slightly on edge and more self-conscious than usual."
+            )
+        if levels.get("social_friction", 0.0) >= 0.35 and nearby:
+            bits.append("Nearby interactions feel easier to misread than usual.")
+        if levels.get("urgency", 0.0) >= 0.35:
+            bits.append("Decisions feel a bit more immediate than usual.")
+        if not bits:
+            bits.append(
+                "You feel steady enough to act on concrete things in front of you."
+            )
+        return " ".join(bits[:2])
 
     def _persona_text(self, memory, guest_id: str) -> str:
         if memory is None:

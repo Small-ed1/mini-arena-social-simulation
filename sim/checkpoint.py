@@ -6,7 +6,14 @@ from typing import Any, Dict, Optional, Tuple
 
 from sim.logging_utils import ensure_dir, hash_json, json_dumps_canonical
 from sim.memory import MemoryStore
-from sim.world_state import GuestState, OpenThread, Prop, Rulebook, WorldState
+from sim.world_state import (
+    GuestState,
+    OpenThread,
+    Prop,
+    Rulebook,
+    WorldState,
+    default_conceptual_levels,
+)
 
 
 def save_checkpoint(
@@ -79,6 +86,7 @@ def world_from_dict(
             last_action=gd.get("last_action"),
             spotlight_weight=float(gd.get("spotlight_weight", 0.0)),
             reflection_requested=bool(gd.get("reflection_requested", False)),
+            spawn_tick=gd.get("spawn_tick"),
         )
 
     open_threads: Dict[str, OpenThread] = {}
@@ -88,6 +96,7 @@ def world_from_dict(
             thread_type=str(td["thread_type"]),
             status=str(td["status"]),
             description=str(td["description"]),
+            location=(str(td["location"]) if td.get("location") is not None else None),
             involved_guest_ids=list(td.get("involved_guest_ids") or []),
         )
 
@@ -110,6 +119,31 @@ def world_from_dict(
         location_details={
             str(k): list(v or [])
             for k, v in (data.get("location_details") or {}).items()
+        },
+        conceptual_global={
+            **default_conceptual_levels(),
+            **{
+                str(k): float(v)
+                for k, v in (data.get("conceptual_global") or {}).items()
+            },
+        },
+        conceptual_by_location={
+            str(loc): {
+                **default_conceptual_levels(),
+                **{str(k): float(v) for k, v in (vals or {}).items()},
+            }
+            for loc, vals in (data.get("conceptual_by_location") or {}).items()
+        },
+        conceptual_by_guest={
+            str(gid): {
+                **default_conceptual_levels(),
+                **{str(k): float(v) for k, v in (vals or {}).items()},
+            }
+            for gid, vals in (data.get("conceptual_by_guest") or {}).items()
+        },
+        guest_turn_fairness={
+            str(gid): float(v)
+            for gid, v in (data.get("guest_turn_fairness") or {}).items()
         },
         host_style=str(data.get("host_style") or "neutral"),
         host_last_actions=list(data.get("host_last_actions") or []),

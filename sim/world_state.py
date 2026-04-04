@@ -5,6 +5,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 MOOD_AXES = ("calm_agitated", "hopeful_cynical", "engaged_bored")
+CONCEPTUAL_AXES = (
+    "collaboration_pressure",
+    "unease",
+    "social_friction",
+    "urgency",
+)
 
 
 @dataclass
@@ -51,6 +57,7 @@ class GuestState:
     last_action: Optional[str] = None
     spotlight_weight: float = 1.0
     reflection_requested: bool = False
+    spawn_tick: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -69,6 +76,7 @@ class GuestState:
             "last_action": self.last_action,
             "spotlight_weight": _round_float(self.spotlight_weight),
             "reflection_requested": self.reflection_requested,
+            "spawn_tick": self.spawn_tick,
         }
 
 
@@ -99,6 +107,7 @@ class OpenThread:
     thread_type: str
     status: str
     description: str
+    location: Optional[str] = None
     involved_guest_ids: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -107,6 +116,7 @@ class OpenThread:
             "thread_type": self.thread_type,
             "status": self.status,
             "description": self.description,
+            "location": self.location,
             "involved_guest_ids": sorted(self.involved_guest_ids),
         }
 
@@ -138,6 +148,10 @@ class WorldState:
     unspawned_guest_ids: List[str]
     open_threads: Dict[str, OpenThread]
     location_details: Dict[str, List[str]] = field(default_factory=dict)
+    conceptual_global: Dict[str, float] = field(default_factory=dict)
+    conceptual_by_location: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    conceptual_by_guest: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    guest_turn_fairness: Dict[str, float] = field(default_factory=dict)
     host_style: str = "neutral"
     host_last_actions: List[str] = field(default_factory=list)
     rulebook: Optional[Rulebook] = None
@@ -161,6 +175,32 @@ class WorldState:
                 k: list(self.location_details.get(k, []))
                 for k in sorted(self.locations)
             },
+            "conceptual_global": {
+                k: _round_float(self.conceptual_global.get(k, 0.0))
+                for k in CONCEPTUAL_AXES
+            },
+            "conceptual_by_location": {
+                loc: {
+                    k: _round_float(
+                        (self.conceptual_by_location.get(loc) or {}).get(k, 0.0)
+                    )
+                    for k in CONCEPTUAL_AXES
+                }
+                for loc in sorted(self.locations)
+            },
+            "conceptual_by_guest": {
+                gid: {
+                    k: _round_float(
+                        (self.conceptual_by_guest.get(gid) or {}).get(k, 0.0)
+                    )
+                    for k in CONCEPTUAL_AXES
+                }
+                for gid in sorted(self.guests)
+            },
+            "guest_turn_fairness": {
+                gid: _round_float(self.guest_turn_fairness.get(gid, 0.0))
+                for gid in sorted(self.guests)
+            },
             "props": {k: self.props[k].to_dict() for k in sorted(self.props)},
             "guests": {k: self.guests[k].to_dict() for k in sorted(self.guests)},
             "spawned_guest_ids": list(sorted(self.spawned_guest_ids)),
@@ -174,6 +214,23 @@ class WorldState:
 
 def _round_float(x: float) -> float:
     return float(round(float(x), 6))
+
+
+def default_conceptual_levels() -> Dict[str, float]:
+    return {axis: 0.0 for axis in CONCEPTUAL_AXES}
+
+
+def combined_conceptual_for_guest(world: WorldState, guest_id: str) -> Dict[str, float]:
+    guest = world.guests[guest_id]
+    location_levels = world.conceptual_by_location.get(guest.location) or {}
+    guest_levels = world.conceptual_by_guest.get(guest_id) or {}
+    out: Dict[str, float] = {}
+    for axis in CONCEPTUAL_AXES:
+        total = float(world.conceptual_global.get(axis, 0.0))
+        total += float(location_levels.get(axis, 0.0))
+        total += float(guest_levels.get(axis, 0.0))
+        out[axis] = float(max(0.0, min(1.0, total)))
+    return out
 
 
 def load_scene(scene_cfg: Dict[str, Any]) -> Scene:
@@ -219,6 +276,7 @@ def make_initial_world(
             familiarity={},
             current_goal="Explore the arena",
             spotlight_weight=1.0 / float(guest_count),
+            spawn_tick=None,
         )
 
     # Initialize pairwise social maps (simple symmetric defaults).
@@ -250,6 +308,7 @@ def make_initial_world(
             thread_type=str(t["thread_type"]),
             status=str(t["status"]),
             description=str(t["description"]),
+            location=(str(t["location"]) if t.get("location") is not None else None),
             involved_guest_ids=[],
         )
 
@@ -263,6 +322,12 @@ def make_initial_world(
         unspawned_guest_ids=list(sorted(guests)),
         open_threads=open_threads,
         location_details={k: [] for k in sorted(scene.locations)},
+        conceptual_global=default_conceptual_levels(),
+        conceptual_by_location={
+            k: default_conceptual_levels() for k in sorted(scene.locations)
+        },
+        conceptual_by_guest={k: default_conceptual_levels() for k in sorted(guests)},
+        guest_turn_fairness={k: 0.0 for k in sorted(guests)},
         host_style="neutral",
         host_last_actions=[],
         rulebook=rulebook,

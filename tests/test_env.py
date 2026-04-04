@@ -5,7 +5,13 @@ from pathlib import Path
 import yaml
 
 from sim.env import Environment
-from sim.schemas import GuestInteract, GuestMove, HostEnrichWorld, HostSignalStyle
+from sim.schemas import (
+    GuestInteract,
+    GuestMove,
+    HostEnrichWorld,
+    HostShapeConceptual,
+    HostSignalStyle,
+)
 from sim.world_state import Rulebook, load_scene, make_initial_world
 
 
@@ -119,8 +125,24 @@ def test_initial_world_has_unspawned_guests_only() -> None:
     world = _make_world()
     obs = env.observe_host(world, memory=None)
     assert obs.guests == []
+    assert obs.valid_locations == ["foyer", "mirror_hall", "stage_room", "workshop"]
+    assert obs.valid_concepts == [
+        "collaboration_pressure",
+        "unease",
+        "social_friction",
+        "urgency",
+    ]
     assert len(world.spawned_guest_ids) == 0
     assert len(world.unspawned_guest_ids) == 6
+
+
+def test_host_observation_only_includes_open_threads() -> None:
+    env = Environment()
+    world = _make_world()
+    for thread in world.open_threads.values():
+        thread.status = "closed"
+    obs = env.observe_host(world, memory=None)
+    assert obs.open_threads == []
 
 
 def test_host_enrich_world_adds_location_detail() -> None:
@@ -141,3 +163,106 @@ def test_host_enrich_world_adds_location_detail() -> None:
         world.location_details["foyer"][-1]
         == "A bench cushion looks recently disturbed."
     )
+
+
+def test_host_shape_conceptual_updates_hidden_pressure() -> None:
+    env = Environment()
+    world = _make_world()
+    world.spawned_guest_ids = ["guest_1"]
+    world.unspawned_guest_ids = [gid for gid in world.guests if gid != "guest_1"]
+    world.guests["guest_1"].location = "foyer"
+
+    res = env.apply_host_action(
+        world,
+        HostShapeConceptual(
+            type="shape_conceptual",
+            reason_short="Pressure collaboration",
+            actor_id="host",
+            concept="collaboration_pressure",
+            scope="location",
+            location="foyer",
+            intensity=0.8,
+            note="Being alone should feel costly.",
+        ),
+    )
+    assert res.success
+    env.tick_postprocess(world)
+    obs = env.observe_guest(world, "guest_1", memory=None)
+    assert "less promising than usual" in obs.felt_state.lower()
+
+
+def test_using_foam_key_alone_does_not_close_repair_thread() -> None:
+    env = Environment()
+    world = _make_world()
+    gid = "guest_1"
+    world.spawned_guest_ids = [gid]
+    world.unspawned_guest_ids = [x for x in world.guests if x != gid]
+    world.guests[gid].location = "foyer"
+
+    act = GuestInteract(
+        type="interact",
+        reason_short="Use key",
+        actor_id=gid,
+        verb="use",
+        prop_id="prop_foam_key",
+        target_guest_id=None,
+        speech=None,
+    )
+    res = env.apply_guest_action(world, gid, act)
+    assert res.success
+    assert "the mechanism resists a solitary attempt" in res.messages
+    assert world.open_threads["thread_puzzle_1"].status == "open"
+
+
+def test_using_foam_key_with_helper_closes_repair_thread() -> None:
+    env = Environment()
+    world = _make_world()
+    world.spawned_guest_ids = ["guest_1", "guest_2"]
+    world.unspawned_guest_ids = [
+        x for x in world.guests if x not in world.spawned_guest_ids
+    ]
+    world.guests["guest_1"].location = "foyer"
+    world.guests["guest_2"].location = "foyer"
+
+    act = GuestInteract(
+        type="interact",
+        reason_short="Use key with help",
+        actor_id="guest_1",
+        verb="use",
+        prop_id="prop_foam_key",
+        target_guest_id=None,
+        speech=None,
+    )
+    res = env.apply_guest_action(world, "guest_1", act)
+    assert res.success
+    assert "closed thread thread_puzzle_1" in res.messages
+    assert world.open_threads["thread_puzzle_1"].status == "closed"
+
+
+def test_collaboration_reduces_location_pressure() -> None:
+    env = Environment()
+    world = _make_world()
+    world.spawned_guest_ids = ["guest_1", "guest_2"]
+    world.unspawned_guest_ids = [
+        x for x in world.guests if x not in world.spawned_guest_ids
+    ]
+    world.guests["guest_1"].location = "foyer"
+    world.guests["guest_2"].location = "foyer"
+    world.conceptual_by_location["foyer"]["collaboration_pressure"] = 0.8
+
+    from sim.schemas import GuestCollaborate
+
+    res = env.apply_guest_action(
+        world,
+        "guest_1",
+        GuestCollaborate(
+            type="collaborate",
+            reason_short="Work together",
+            actor_id="guest_1",
+            target_guest_id="guest_2",
+            proposal="Let's work on the panel together.",
+            speech=None,
+        ),
+    )
+    assert res.success
+    assert world.conceptual_by_location["foyer"]["collaboration_pressure"] < 0.8

@@ -31,8 +31,8 @@ def fallback_host_action(obs: Any, rules: Rulebook) -> HostAction:
     if not isinstance(fb, dict):
         fb = {
             "type": "signal_style",
-            "reason_short": "Reset to safe tone",
-            "style": "gentle",
+            "reason_short": "Maintain coherence",
+            "style": "neutral",
         }
     data: Dict[str, Any] = dict(fb)
     data.setdefault("actor_id", "host")

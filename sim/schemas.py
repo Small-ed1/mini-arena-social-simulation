@@ -58,6 +58,12 @@ class StrictModel(BaseModel):
 
 
 ThreadType = Literal["puzzle", "conflict", "mystery", "performance", "repair"]
+ConceptualType = Literal[
+    "collaboration_pressure",
+    "unease",
+    "social_friction",
+    "urgency",
+]
 
 
 class HostSpawnEvent(StrictModel):
@@ -93,6 +99,26 @@ class HostEnrichWorld(StrictModel):
     actor_id: Literal["host"]
     location: LocationId
     detail: ShortText
+
+
+class HostShapeConceptual(StrictModel):
+    type: Literal["shape_conceptual"]
+    reason_short: ShortReason
+    actor_id: Literal["host"]
+    concept: ConceptualType
+    scope: Literal["all", "location", "one"] = "all"
+    location: Optional[LocationId] = None
+    target_guest_id: Optional[GuestId] = None
+    intensity: Annotated[float, Field(ge=0.0, le=1.0)]
+    note: Optional[ShortText] = None
+
+    @model_validator(mode="after")
+    def _validate_scope(self) -> "HostShapeConceptual":
+        if self.scope == "location" and self.location is None:
+            raise ValueError("location required when scope=location")
+        if self.scope == "one" and self.target_guest_id is None:
+            raise ValueError("target_guest_id required when scope=one")
+        return self
 
 
 class HostAllocateSpotlight(StrictModel):
@@ -133,6 +159,7 @@ HostAction = Annotated[
         HostSpawnEvent,
         HostInjectProp,
         HostEnrichWorld,
+        HostShapeConceptual,
         HostAllocateSpotlight,
         HostSignalStyle,
         HostRequestReflection,
@@ -221,6 +248,7 @@ AnyAction = Annotated[
         HostSpawnEvent,
         HostInjectProp,
         HostEnrichWorld,
+        HostShapeConceptual,
         HostAllocateSpotlight,
         HostSignalStyle,
         HostRequestReflection,
@@ -270,11 +298,15 @@ class ThreadSnapshot(StrictModel):
     description: Annotated[
         str, StringConstraints(min_length=1, max_length=240, strip_whitespace=True)
     ]
+    location: Optional[LocationId] = None
 
 
 class ObservationHost(StrictModel):
     tick: int
     world_summary: Annotated[str, StringConstraints(min_length=1, max_length=2000)]
+    conceptual_summary: Annotated[str, StringConstraints(min_length=1, max_length=1200)]
+    valid_locations: List[LocationId] = Field(default_factory=list, min_length=1)
+    valid_concepts: List[ConceptualType] = Field(default_factory=list, min_length=1)
     guests: List[GuestSnapshot]
     open_threads: List[ThreadSnapshot]
     memory_chunks: List[MemoryChunk]
@@ -301,6 +333,7 @@ class ObservationGuest(StrictModel):
     location: LocationId
     valid_locations: List[LocationId] = Field(default_factory=list, min_length=1)
     local_view: Annotated[str, StringConstraints(min_length=1, max_length=1200)]
+    felt_state: Annotated[str, StringConstraints(min_length=1, max_length=400)]
     nearby_guests: List[GuestSnapshot]
     nearby_props: List[PropSnapshot]
     open_threads: List[ThreadSnapshot]
